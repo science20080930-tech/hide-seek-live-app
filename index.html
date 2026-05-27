@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>捉迷藏即時定位</title>
+    <link rel="preconnect" href="https://unpkg.com" />
+    <link rel="preconnect" href="https://esm.sh" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="stage">
+      <section id="locationView" class="view gate-view" aria-label="位置授權">
+        <div class="gate-panel">
+          <p class="eyebrow">Hide & Seek</p>
+          <h1>先允許精確定位</h1>
+          <p class="lead">遊戲會持續更新你的位置，直到你關閉瀏覽器或登出。</p>
+          <button id="grantLocationButton" class="primary-action" type="button">允許定位並繼續</button>
+          <button id="mockLocationButton" class="secondary-action" type="button">先用模擬位置測試</button>
+          <p id="locationMessage" class="message-line" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section id="authView" class="view auth-view hidden" aria-label="玩家登入">
+        <div class="auth-card">
+          <p class="eyebrow">Player Login</p>
+          <h1>登入玩家帳號</h1>
+
+          <div id="supabaseSetup" class="setup-panel hidden">
+            <h2>Supabase 設定</h2>
+            <label>
+              Project URL
+              <input id="supabaseUrl" type="url" placeholder="https://xxxx.supabase.co" autocomplete="off" />
+            </label>
+            <label>
+              anon public key
+              <input id="supabaseAnonKey" type="password" placeholder="貼上 anon key" autocomplete="off" />
+            </label>
+            <button id="saveSupabaseButton" class="secondary-action" type="button">儲存設定</button>
+          </div>
+
+          <div class="email-fallback">
+            <label>
+              Email
+              <input id="emailInput" type="email" placeholder="player@example.com" autocomplete="email" />
+            </label>
+            <label>
+              密碼
+              <input id="passwordInput" type="password" minlength="6" placeholder="至少 6 個字元" autocomplete="current-password" />
+            </label>
+            <div class="action-grid">
+              <button id="emailSignUpButton" class="secondary-action" type="button">Email 註冊</button>
+              <button id="emailSignInButton" class="secondary-action" type="button">Email 登入</button>
+            </div>
+          </div>
+
+          <p id="authMessage" class="message-line" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section id="lobbyView" class="view lobby-view hidden" aria-label="開局">
+        <div class="lobby-card">
+          <div class="top-row">
+            <div>
+              <p class="eyebrow">Game Lobby</p>
+              <h1>準備開局</h1>
+            </div>
+            <button id="signOutButton" class="secondary-action compact" type="button">登出</button>
+          </div>
+
+          <label>
+            房間代碼
+            <input id="roomCode" type="text" maxlength="24" value="main" />
+          </label>
+          <label>
+            玩家名稱
+            <input id="playerName" type="text" maxlength="18" value="玩家 1" />
+          </label>
+
+          <button id="startGameButton" class="primary-action wide" type="button">開局</button>
+          <p id="lobbyMessage" class="message-line" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section id="teamView" class="view team-view hidden" aria-label="選擇隊伍">
+        <div class="team-card">
+          <p class="eyebrow">Choose Team</p>
+          <h1>選擇隊伍</h1>
+          <div class="team-grid">
+            <button id="chooseRedButton" class="team-choice red-choice" type="button">
+              <span>紅隊</span>
+              <small>尋找方，可以看到同房間所有玩家</small>
+            </button>
+            <button id="chooseGreenButton" class="team-choice green-choice" type="button">
+              <span>綠隊</span>
+              <small>躲藏方，只看自己與綠隊隊友</small>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section id="gameView" class="view game-view hidden" aria-label="遊戲地圖">
+        <aside class="hud">
+          <div class="hud-main">
+            <div>
+              <p class="eyebrow">Live Map</p>
+              <h1 id="hudTitle">捉迷藏</h1>
+              <p id="hudStatus" class="hud-status">等待同步</p>
+            </div>
+            <span id="teamBadge" class="team-badge">未選隊</span>
+          </div>
+          <div id="playerList" class="player-list" aria-live="polite"></div>
+          <div class="hud-actions">
+            <button id="changeTeamButton" class="secondary-action" type="button">換隊伍</button>
+            <button id="recenterButton" class="secondary-action" type="button">回到我的位置</button>
+          </div>
+        </aside>
+        <div id="leafletMap" class="map-layer"></div>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

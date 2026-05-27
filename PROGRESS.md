@@ -20,6 +20,9 @@
 - 關閉瀏覽器前用 Supabase REST + `keepalive` 嘗試標記離線。
 - 公開預覽 tunnel 已啟動：
   - `https://eighty-planes-type.loca.lt`
+- GitHub Pages 正式上線：
+  - 玩家網站：`https://science20080930-tech.github.io/hide-seek-live-app/`
+  - 控制台：`https://science20080930-tech.github.io/hide-seek-control/`
 - 玩家視角已改成只看敵隊位置：
   - 紅隊看綠隊。
   - 綠隊看紅隊。
@@ -37,6 +40,9 @@
 - 公開 tunnel 回傳新版 HTML。
 - 控制台本機 `http://127.0.0.1:5178/` 可開啟。
 - 控制台公開 tunnel 回傳控制台 HTML。
+- GitHub Pages 玩家網站回傳 200，內容包含新版定位首頁。
+- GitHub Pages 控制台回傳 200，內容包含控制台登入。
+- Browser 實際開啟兩個 GitHub Pages URL，console 無 error / warning。
 - 已建立控制員帳號 `stu310101@shsh.tw`，並加入 `control_operators`。
 - 已用控制員帳號登入控制台，確認可監看 `main` 房間。
 - Browser 實際操作：

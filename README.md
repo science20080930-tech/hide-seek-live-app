@@ -58,7 +58,21 @@ export const SUPABASE_CONFIG = {
 - 關閉瀏覽器前會用 `keepalive` 嘗試標記離線。
 - 簡化版無標籤地圖底圖。
 
-## 公開預覽
+## 正式上線網址
+
+玩家網站：
+
+```text
+https://science20080930-tech.github.io/hide-seek-live-app/
+```
+
+控制台：
+
+```text
+https://science20080930-tech.github.io/hide-seek-control/
+```
+
+## 本機臨時預覽
 
 目前使用本機 tunnel：
 
@@ -82,7 +96,13 @@ C:\Users\xuan9\Desktop\給codex運行的資料夾\捉迷藏控制台
 http://127.0.0.1:5178
 ```
 
-公開預覽：
+正式上線：
+
+```text
+https://science20080930-tech.github.io/hide-seek-control/
+```
+
+本機 tunnel 預覽：
 
 ```text
 https://afraid-rats-refuse.loca.lt

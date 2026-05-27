@@ -5,6 +5,10 @@ const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
 const STORAGE_KEY = "hide-seek-live-state-v3";
 const CONFIG_KEY = "hide-seek-supabase-config";
 const LOCATION_SYNC_MS = 1200;
+const PRECISION_WARMUP_MS = 8000;
+const PRECISION_SAMPLE_WINDOW_MS = 12000;
+const TARGET_ACCURACY_METERS = 20;
+const ACCEPTABLE_ACCURACY_METERS = 35;
 
 const state = {
   phase: "location",
@@ -23,6 +27,8 @@ const state = {
   usingMockLocation: false,
   watchId: null,
   lastSyncAt: 0,
+  precisionStartedAt: 0,
+  locationSamples: [],
   players: [],
 };
 
@@ -183,7 +189,6 @@ function initMap() {
 function requestLocationOnEntry() {
   if (state.locationGranted && state.position) {
     showNextAfterLocation();
-    return;
   }
 
   startPreciseLocation();
@@ -195,27 +200,17 @@ function startPreciseLocation() {
     return;
   }
 
-  setLocationMessage("正在等待瀏覽器定位授權。");
+  setLocationMessage("正在啟動高精度定位，請稍等 GPS 校準。");
 
   if (state.watchId !== null) {
     navigator.geolocation.clearWatch(state.watchId);
   }
 
+  state.precisionStartedAt = Date.now();
+  state.locationSamples = [];
+
   state.watchId = navigator.geolocation.watchPosition(
-    (position) => {
-      state.locationGranted = true;
-      state.usingMockLocation = false;
-      state.position = {
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-      };
-      state.accuracy = Math.round(position.coords.accuracy);
-      saveState();
-      setLocationMessage(`定位中，精度約 ±${state.accuracy}m。`);
-      showNextAfterLocation();
-      syncOwnPlayer(false);
-      render();
-    },
+    handlePrecisePosition,
     (error) => {
       const messages = {
         1: "定位授權被拒絕，請允許位置權限後再繼續。",
@@ -226,10 +221,76 @@ function startPreciseLocation() {
     },
     {
       enableHighAccuracy: true,
-      maximumAge: 1500,
-      timeout: 12000,
+      maximumAge: 0,
+      timeout: 30000,
     },
   );
+}
+
+function handlePrecisePosition(position) {
+  const fix = {
+    lat: position.coords.latitude,
+    lng: position.coords.longitude,
+    accuracy: Math.round(position.coords.accuracy),
+    capturedAt: Date.now(),
+  };
+
+  state.locationGranted = true;
+  state.usingMockLocation = false;
+  rememberLocationFix(fix);
+
+  const bestFix = getBestRecentFix();
+  const elapsed = Date.now() - state.precisionStartedAt;
+  const hasTargetFix = bestFix.accuracy <= TARGET_ACCURACY_METERS;
+  const stillWarmingUp = elapsed < PRECISION_WARMUP_MS && !hasTargetFix && !state.position;
+
+  if (stillWarmingUp) {
+    setLocationMessage(`正在校準高精度定位，目前最佳精度約 ±${bestFix.accuracy}m。`);
+    render();
+    return;
+  }
+
+  if (shouldAcceptFix(bestFix)) {
+    acceptLocationFix(bestFix);
+    return;
+  }
+
+  setLocationMessage(`忽略較粗略定位，目前採用 ±${state.accuracy}m，最新回傳 ±${bestFix.accuracy}m。`);
+  render();
+}
+
+function rememberLocationFix(fix) {
+  state.locationSamples.push(fix);
+  state.locationSamples = state.locationSamples.filter(
+    (sample) => fix.capturedAt - sample.capturedAt <= PRECISION_SAMPLE_WINDOW_MS,
+  );
+}
+
+function getBestRecentFix() {
+  return [...state.locationSamples].sort((a, b) => a.accuracy - b.accuracy)[0];
+}
+
+function shouldAcceptFix(fix) {
+  if (!state.position || !state.accuracy) return true;
+  if (fix.accuracy <= state.accuracy) return true;
+  if (fix.accuracy <= ACCEPTABLE_ACCURACY_METERS) return true;
+
+  const movedMeters = distanceInMeters(state.position, fix);
+  const movementThreshold = Math.max(state.accuracy, fix.accuracy, ACCEPTABLE_ACCURACY_METERS) * 1.4;
+  return movedMeters >= movementThreshold;
+}
+
+function acceptLocationFix(fix) {
+  state.position = {
+    lat: fix.lat,
+    lng: fix.lng,
+  };
+  state.accuracy = fix.accuracy;
+  saveState();
+  setLocationMessage(`高精度定位中，最佳精度約 ±${state.accuracy}m。`);
+  showNextAfterLocation();
+  syncOwnPlayer(false);
+  render();
 }
 
 function useMockLocation() {

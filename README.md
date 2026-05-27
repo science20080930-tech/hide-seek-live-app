@@ -46,7 +46,9 @@ export const SUPABASE_CONFIG = {
 ## 已完成
 
 - 位置授權閘門。
-- 高精度 `watchPosition` 持續定位。
+- 高精度 `watchPosition` 持續定位，設定為不使用快取位置。
+- 進入後會先進行 GPS 暖機取樣，採用誤差半徑最小的位置上傳。
+- 後續會忽略比目前更粗略、且不像真實移動的飄移點。
 - Supabase Email/密碼註冊與登入。
 - `player_profiles` 保存玩家基本資料。
 - `game_players` 保存房間、隊伍、座標、在線狀態。

@@ -12,6 +12,12 @@
   - 簡化地圖遊戲畫面
 - 地圖改成 Carto light no labels，資訊量比原本 OpenStreetMap 少很多。
 - `watchPosition` 持續定位，位置變化會節流同步到 Supabase。
+- 已改成高精度定位模式：
+  - `maximumAge: 0`
+  - `timeout: 30000`
+  - 先暖機收集定位樣本
+  - 採用最小誤差半徑的位置
+  - 忽略粗略飄移點
 - 新增 `supabase-config.js`，可放 Project URL 與 anon public key。
 - 新增 Google OAuth 登入。
 - Email 註冊/登入保留為備用。

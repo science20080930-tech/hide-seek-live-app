@@ -21,6 +21,7 @@ const state = {
   realtimeJoinPromise: null,
   room: null,
   hasPlayerRow: false,
+  joinInProgress: false,
   endRedirectTimer: null,
   config: { url: "", anonKey: "" },
   roomCode: "main",
@@ -508,6 +509,7 @@ async function upsertProfile() {
 }
 
 async function joinRoom() {
+  if (state.joinInProgress) return;
   if (!state.session) {
     setLobbyMessage("請先登入。");
     showView("auth");
@@ -525,37 +527,47 @@ async function joinRoom() {
   state.playerName = elements.playerName.value.trim() || "玩家";
   saveState();
 
-  setLobbyMessage("正在檢查房間...");
-  const room = await loadRoom();
-  if (!room) return;
+  state.joinInProgress = true;
+  elements.startGameButton.disabled = true;
 
-  state.room = room;
-  if (room.status === "ended") {
-    setLobbyMessage("這個房間的遊戲已結束，請等待主持人建立新房間。");
-    return;
-  }
+  try {
+    setLobbyMessage("正在檢查房間...");
+    const room = await loadRoom();
+    if (!room) return;
 
-  if (room.status === "started") {
-    const ownRecord = await loadOwnPlayerRecord();
-    if (!ownRecord?.team) {
-      setLobbyMessage("這個房間已經開始，未被主持人分隊的玩家不能加入。");
+    state.room = room;
+    if (room.status === "ended") {
+      setLobbyMessage("這個房間的遊戲已結束，請等待主持人建立新房間。");
       return;
     }
-    state.team = ownRecord.team;
-    state.hasPlayerRow = true;
-    await joinRealtimeRoom();
-    await syncOwnPlayer(true);
-    enterGame();
-    return;
-  }
 
-  await joinRealtimeRoom();
-  await loadRoomPlayers();
-  state.team = "";
-  await syncOwnPlayer(true);
-  if (!state.hasPlayerRow) return;
-  showWaiting();
-  render();
+    if (room.status === "started") {
+      const ownRecord = await loadOwnPlayerRecord();
+      if (!ownRecord?.team) {
+        setLobbyMessage("這個房間已經開始，未被主持人分隊的玩家不能加入。");
+        return;
+      }
+      state.team = ownRecord.team;
+      state.hasPlayerRow = true;
+      await joinRealtimeRoom();
+      await syncOwnPlayer(true);
+      setLobbyMessage("");
+      enterGame();
+      return;
+    }
+
+    await joinRealtimeRoom();
+    await loadRoomPlayers();
+    state.team = "";
+    await syncOwnPlayer(true);
+    if (!state.hasPlayerRow) return;
+    setLobbyMessage("");
+    showWaiting();
+    render();
+  } finally {
+    state.joinInProgress = false;
+    elements.startGameButton.disabled = false;
+  }
 }
 
 async function loadRoom() {
@@ -842,6 +854,7 @@ async function syncOwnPlayer(force) {
   if (!state.supabase || !state.session || !state.position || !state.room) return;
   if (state.room.room_code !== state.roomCode) return;
   if (state.room.status !== "lobby" && state.room.status !== "started") return;
+  if (!state.joinInProgress && !["waiting", "game"].includes(state.phase)) return;
   if (document.visibilityState === "hidden") return;
   if (!force && Date.now() - state.lastSyncAt < LOCATION_SYNC_MS) return;
 

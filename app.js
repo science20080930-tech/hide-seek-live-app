@@ -4,8 +4,8 @@ import { SUPABASE_CONFIG } from "./supabase-config.js";
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
 const STORAGE_KEY = "hide-seek-live-state-v3";
 const CONFIG_KEY = "hide-seek-supabase-config";
-const LOCATION_SYNC_MS = 1200;
-const ACTIVE_PLAYER_MS = 20_000;
+const LOCATION_SYNC_MS = 500;
+const ACTIVE_PLAYER_MS = 8_000;
 const PRECISION_WARMUP_MS = 8000;
 const PRECISION_SAMPLE_WINDOW_MS = 12000;
 const TARGET_ACCURACY_METERS = 20;
@@ -187,7 +187,8 @@ function initMap() {
   }).setView([DEFAULT_CENTER.lat, DEFAULT_CENTER.lng], 17);
 
   L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
-    maxZoom: 20,
+    maxNativeZoom: 20,
+    maxZoom: 22,
   }).addTo(state.map);
 
   L.control.zoom({ position: "bottomright" }).addTo(state.map);

@@ -4,9 +4,9 @@ import { SUPABASE_CONFIG } from "./supabase-config.js";
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
 const STORAGE_KEY = "hide-seek-live-state-v3";
 const CONFIG_KEY = "hide-seek-supabase-config";
-const LOCATION_SYNC_MS = 500;
-const ROOM_STATUS_POLL_MS = 1000;
-const ACTIVE_PLAYER_MS = 8_000;
+const LOCATION_SYNC_MS = 1_200;
+const ROOM_STATUS_POLL_MS = 1_500;
+const ACTIVE_PLAYER_MS = 120_000;
 const PRECISION_WARMUP_MS = 8000;
 const PRECISION_SAMPLE_WINDOW_MS = 12000;
 const TARGET_ACCURACY_METERS = 20;
@@ -36,6 +36,9 @@ const state = {
   heartbeatId: null,
   lastSyncAt: 0,
   lastRoomPollAt: 0,
+  syncInProgress: false,
+  syncPromise: null,
+  roomPollInProgress: false,
   precisionStartedAt: 0,
   locationSamples: [],
   players: [],
@@ -702,7 +705,6 @@ async function loadRoomPlayers() {
     .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
     .eq("room_code", state.roomCode)
     .eq("is_online", true)
-    .gte("updated_at", getActiveSinceIso())
     .order("updated_at", { ascending: false });
 
   if (error) {
@@ -747,21 +749,32 @@ async function handleRoomStateChange() {
 async function pollRoomStatus(force) {
   if (!state.supabase || !state.session) return;
   if (!["waiting", "game"].includes(state.phase)) return;
+  if (state.roomPollInProgress) return;
   if (!force && Date.now() - state.lastRoomPollAt < ROOM_STATUS_POLL_MS) return;
 
+  state.roomPollInProgress = true;
   state.lastRoomPollAt = Date.now();
-  const { data, error } = await state.supabase
-    .from("game_rooms")
-    .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
-    .eq("room_code", state.roomCode)
-    .maybeSingle();
+  try {
+    const { data, error } = await withTimeout(
+      state.supabase
+        .from("game_rooms")
+        .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
+        .eq("room_code", state.roomCode)
+        .maybeSingle(),
+      "檢查房間狀態逾時。",
+    );
 
-  if (error || !data) return;
+    if (error || !data) return;
 
-  state.room = data;
-  if (data.status === "ended" || (data.status === "started" && state.phase === "waiting")) {
-    await handleRoomStateChange();
-    render();
+    state.room = data;
+    if (data.status === "ended" || (data.status === "started" && state.phase === "waiting")) {
+      await handleRoomStateChange();
+      render();
+    }
+  } catch {
+    // Background poll only backs up realtime; keep the current screen stable.
+  } finally {
+    state.roomPollInProgress = false;
   }
 }
 
@@ -881,53 +894,75 @@ function fromDatabasePlayer(record) {
   };
 }
 
-async function syncOwnPlayer(force) {
+function canSyncOwnPlayer() {
   if (!state.supabase || !state.session || !state.position || !state.room) return;
   if (state.room.room_code !== state.roomCode) return;
   if (state.room.status !== "lobby" && state.room.status !== "started") return;
   if (!state.joinInProgress && !["waiting", "game"].includes(state.phase)) return;
   if (document.visibilityState === "hidden") return;
+  return true;
+}
+
+async function syncOwnPlayer(force) {
+  if (!canSyncOwnPlayer()) return;
+
+  if (state.syncPromise) {
+    if (!force) return state.syncPromise.catch(() => {});
+    await state.syncPromise.catch(() => {});
+  }
+
+  if (!canSyncOwnPlayer()) return;
   if (!force && Date.now() - state.lastSyncAt < LOCATION_SYNC_MS) return;
 
+  state.syncInProgress = true;
   state.lastSyncAt = Date.now();
-  const user = state.session.user;
-  const ownPlayer = getOwnPlayer();
-  const assignedTeam = state.team || ownPlayer?.team || "";
-  const payload = {
-    user_id: user.id,
-    email: user.email,
-    display_name: state.playerName || getDisplayName(user),
-    room_code: state.roomCode,
-    lat: state.position.lat,
-    lng: state.position.lng,
-    accuracy: state.accuracy || null,
-    is_online: true,
-    updated_at: new Date().toISOString(),
-  };
+  state.syncPromise = (async () => {
+    const user = state.session.user;
+    const ownPlayer = getOwnPlayer();
+    const assignedTeam = state.team || ownPlayer?.team || "";
+    const payload = {
+      user_id: user.id,
+      email: user.email,
+      display_name: state.playerName || getDisplayName(user),
+      room_code: state.roomCode,
+      lat: state.position.lat,
+      lng: state.position.lng,
+      accuracy: state.accuracy || null,
+      is_online: true,
+      updated_at: new Date().toISOString(),
+    };
 
-  if (state.room.status === "lobby" || assignedTeam) {
-    payload.team = assignedTeam || null;
+    if (state.room.status === "lobby" || assignedTeam) {
+      payload.team = assignedTeam || null;
+    }
+
+    const query = state.hasPlayerRow
+      ? state.supabase.from("game_players").update(payload).eq("user_id", user.id)
+      : state.supabase.from("game_players").upsert(payload, {
+          onConflict: "user_id",
+        });
+
+    const result = await withTimeout(query, "同步定位逾時，請再按一次加入房間。");
+
+    const { error } = result;
+
+    if (error) {
+      setHudStatus(error.message);
+      setLobbyMessage(error.message);
+      return;
+    }
+
+    state.hasPlayerRow = true;
+    applyRealtimePayload({ eventType: "UPDATE", new: payload });
+    setHudStatus(`定位同步中 · ±${state.accuracy || "--"}m`);
+  })();
+
+  try {
+    await state.syncPromise;
+  } finally {
+    state.syncPromise = null;
+    state.syncInProgress = false;
   }
-
-  const query = state.hasPlayerRow
-    ? state.supabase.from("game_players").update(payload).eq("user_id", user.id)
-    : state.supabase.from("game_players").upsert(payload, {
-        onConflict: "user_id",
-      });
-
-  const result = await withTimeout(query, "同步定位逾時，請再按一次加入房間。");
-
-  const { error } = result;
-
-  if (error) {
-    setHudStatus(error.message);
-    setLobbyMessage(error.message);
-    return;
-  }
-
-  state.hasPlayerRow = true;
-  applyRealtimePayload({ eventType: "UPDATE", new: payload });
-  setHudStatus(`定位同步中 · ±${state.accuracy || "--"}m`);
 }
 
 async function markOffline() {
@@ -1113,13 +1148,10 @@ function getSameRoomPlayers() {
 
 function isPlayerActive(player) {
   if (!player.isOnline) return false;
+  if (!Number.isFinite(player.lat) || !Number.isFinite(player.lng)) return false;
   if (!player.updatedAt) return false;
   const updatedAt = Date.parse(player.updatedAt);
   return Number.isFinite(updatedAt) && Date.now() - updatedAt <= ACTIVE_PLAYER_MS;
-}
-
-function getActiveSinceIso() {
-  return new Date(Date.now() - ACTIVE_PLAYER_MS).toISOString();
 }
 
 function recenterMap() {
@@ -1166,7 +1198,7 @@ function setHudStatus(text) {
   elements.hudStatus.textContent = text;
 }
 
-function withTimeout(promise, message, timeoutMs = 10000) {
+function withTimeout(promise, message, timeoutMs = 20000) {
   let timeoutId;
   const timeout = new Promise((_, reject) => {
     timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);

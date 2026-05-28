@@ -63,8 +63,8 @@
         <div class="lobby-card">
           <div class="top-row">
             <div>
-              <p class="eyebrow">Game Lobby</p>
-              <h1>準備開局</h1>
+              <p class="eyebrow">Join Room</p>
+              <h1>加入房間</h1>
             </div>
             <button id="signOutButton" class="secondary-action compact" type="button">登出</button>
           </div>
@@ -78,25 +78,25 @@
             <input id="playerName" type="text" maxlength="18" value="玩家 1" />
           </label>
 
-          <button id="startGameButton" class="primary-action wide" type="button">開局</button>
+          <button id="startGameButton" class="primary-action wide" type="button">加入房間</button>
           <p id="lobbyMessage" class="message-line" aria-live="polite"></p>
         </div>
       </section>
 
-      <section id="teamView" class="view team-view hidden" aria-label="選擇隊伍">
-        <div class="team-card">
-          <p class="eyebrow">Choose Team</p>
-          <h1>選擇隊伍</h1>
-          <div class="team-grid">
-            <button id="chooseRedButton" class="team-choice red-choice" type="button">
-              <span>紅隊</span>
-              <small>尋找方，只看綠隊位置</small>
-            </button>
-            <button id="chooseGreenButton" class="team-choice green-choice" type="button">
-              <span>綠隊</span>
-              <small>躲藏方，只看紅隊位置</small>
-            </button>
-          </div>
+      <section id="waitingView" class="view waiting-view hidden" aria-label="等待遊戲開始">
+        <div class="lobby-card">
+          <p class="eyebrow">Waiting Room</p>
+          <h1 id="waitingRoomTitle">已加入房間</h1>
+          <p id="waitingMessage" class="lead">已加入房間，請等待遊戲開始。</p>
+          <button id="leaveRoomButton" class="secondary-action wide" type="button">返回房間代碼</button>
+        </div>
+      </section>
+
+      <section id="endedView" class="view ended-view hidden" aria-label="遊戲結束">
+        <div class="lobby-card">
+          <p class="eyebrow">Game Over</p>
+          <h1>遊戲已結束</h1>
+          <p class="lead">主持人已結束本局，3 秒後回到房間代碼頁面。</p>
         </div>
       </section>
 
@@ -112,7 +112,6 @@
           </div>
           <div id="playerList" class="player-list" aria-live="polite"></div>
           <div class="hud-actions">
-            <button id="changeTeamButton" class="secondary-action" type="button">換隊伍</button>
             <button id="recenterButton" class="secondary-action" type="button">回到我的位置</button>
           </div>
         </aside>

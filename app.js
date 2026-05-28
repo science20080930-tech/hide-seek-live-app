@@ -19,6 +19,9 @@ const state = {
   realtimeChannel: null,
   realtimeRoomCode: "",
   realtimeJoinPromise: null,
+  room: null,
+  hasPlayerRow: false,
+  endRedirectTimer: null,
   config: { url: "", anonKey: "" },
   roomCode: "main",
   playerName: "玩家 1",
@@ -39,7 +42,8 @@ const views = {
   location: document.querySelector("#locationView"),
   auth: document.querySelector("#authView"),
   lobby: document.querySelector("#lobbyView"),
-  team: document.querySelector("#teamView"),
+  waiting: document.querySelector("#waitingView"),
+  ended: document.querySelector("#endedView"),
   game: document.querySelector("#gameView"),
 };
 
@@ -62,9 +66,9 @@ const elements = {
   playerName: document.querySelector("#playerName"),
   startGameButton: document.querySelector("#startGameButton"),
   lobbyMessage: document.querySelector("#lobbyMessage"),
-  chooseRedButton: document.querySelector("#chooseRedButton"),
-  chooseGreenButton: document.querySelector("#chooseGreenButton"),
-  changeTeamButton: document.querySelector("#changeTeamButton"),
+  waitingRoomTitle: document.querySelector("#waitingRoomTitle"),
+  waitingMessage: document.querySelector("#waitingMessage"),
+  leaveRoomButton: document.querySelector("#leaveRoomButton"),
   recenterButton: document.querySelector("#recenterButton"),
   hudTitle: document.querySelector("#hudTitle"),
   hudStatus: document.querySelector("#hudStatus"),
@@ -145,25 +149,24 @@ function bindEvents() {
   elements.emailSignUpButton.addEventListener("click", signUpWithEmail);
   elements.emailSignInButton.addEventListener("click", signInWithEmail);
   elements.signOutButton.addEventListener("click", signOut);
-  elements.startGameButton.addEventListener("click", openTeamPicker);
-  elements.chooseRedButton.addEventListener("click", () => chooseTeam("red"));
-  elements.chooseGreenButton.addEventListener("click", () => chooseTeam("green"));
-  elements.changeTeamButton.addEventListener("click", openTeamPicker);
+  elements.startGameButton.addEventListener("click", joinRoom);
+  elements.leaveRoomButton.addEventListener("click", async () => {
+    await markOffline();
+    returnToLobby();
+  });
   elements.recenterButton.addEventListener("click", recenterMap);
 
-  elements.roomCode.addEventListener("change", async (event) => {
+  elements.roomCode.addEventListener("change", (event) => {
     state.roomCode = cleanRoomCode(event.target.value);
     elements.roomCode.value = state.roomCode;
     saveState();
-    await joinRealtimeRoom();
-    await syncOwnPlayer(true);
     render();
   });
 
   elements.playerName.addEventListener("input", async (event) => {
     state.playerName = event.target.value.trim() || "玩家";
     saveState();
-    await syncOwnPlayer(false);
+    await syncOwnPlayer(true);
     render();
   });
 
@@ -173,8 +176,6 @@ function bindEvents() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       syncOwnPlayer(true);
-    } else {
-      markOfflineWithKeepalive();
     }
   });
 }
@@ -313,14 +314,14 @@ function startLocationHeartbeat() {
 
 function showNextAfterLocation() {
   if (!state.locationGranted) return;
-  if (["team", "game"].includes(state.phase)) return;
+  if (["waiting", "game", "ended"].includes(state.phase)) return;
 
   if (!state.supabase || !state.session) {
     showView("auth");
     return;
   }
 
-  showView(state.team ? "lobby" : "lobby");
+  showView("lobby");
 }
 
 async function connectSupabaseIfConfigured() {
@@ -366,8 +367,6 @@ async function connectSupabase(url, anonKey) {
       setAuthControls(Boolean(session));
       if (session) {
         await upsertProfile();
-        await syncOwnPlayer(true);
-        await joinRealtimeRoom();
         if (event === "SIGNED_IN" || (event === "INITIAL_SESSION" && ["location", "auth"].includes(state.phase))) {
           showView("lobby");
         }
@@ -381,8 +380,6 @@ async function connectSupabase(url, anonKey) {
     setAuthControls(Boolean(state.session));
     if (state.session) {
       await upsertProfile();
-      await syncOwnPlayer(true);
-      await joinRealtimeRoom();
     }
   } catch (error) {
     setSupabaseSetupVisible(true);
@@ -465,6 +462,9 @@ async function signOut() {
   }
   state.session = null;
   state.players = [];
+  state.room = null;
+  state.hasPlayerRow = false;
+  state.team = "";
   showView("auth");
   render();
 }
@@ -492,29 +492,74 @@ async function upsertProfile() {
   );
 }
 
-function openTeamPicker() {
+async function joinRoom() {
   if (!state.session) {
     setLobbyMessage("請先登入。");
     showView("auth");
     return;
   }
-  showView("team");
+  if (!state.position) {
+    setLobbyMessage("請先允許定位。");
+    showView("location");
+    return;
+  }
+
+  const roomCode = cleanRoomCode(elements.roomCode.value);
+  state.roomCode = roomCode;
+  elements.roomCode.value = roomCode;
+  state.playerName = elements.playerName.value.trim() || "玩家";
+  saveState();
+
+  setLobbyMessage("正在檢查房間...");
+  const room = await loadRoom();
+  if (!room) return;
+
+  state.room = room;
+  if (room.status === "ended") {
+    setLobbyMessage("這個房間的遊戲已結束，請等待主持人建立新房間。");
+    return;
+  }
+
+  await joinRealtimeRoom();
+  await loadRoomPlayers();
+
+  const ownPlayer = getOwnPlayer();
+  if (room.status === "started") {
+    if (!ownPlayer?.team) {
+      setLobbyMessage("這個房間已經開始，未被主持人分隊的玩家不能加入。");
+      return;
+    }
+    state.team = ownPlayer.team;
+    enterGame();
+    return;
+  }
+
+  state.team = "";
+  await syncOwnPlayer(true);
+  if (!state.hasPlayerRow) return;
+  showWaiting();
+  render();
 }
 
-async function chooseTeam(team) {
-  state.team = team;
-  saveState();
-  showView("game");
-  setTimeout(() => state.map.invalidateSize(), 50);
-  recenterMap();
-  render();
-  try {
-    await syncOwnPlayer(true);
-    await joinRealtimeRoom();
-    render();
-  } catch (error) {
-    setHudStatus(error.message || "選隊同步失敗，請再試一次。");
+async function loadRoom() {
+  if (!state.supabase || !state.session) return null;
+
+  const { data, error } = await state.supabase
+    .from("game_rooms")
+    .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
+    .eq("room_code", state.roomCode)
+    .maybeSingle();
+
+  if (error) {
+    setLobbyMessage(`${error.message}。請確認主持人已建立房間，且 Supabase schema 已更新。`);
+    return null;
   }
+  if (!data) {
+    setLobbyMessage("房間不存在，請確認主持人已先建立這個房間代碼。");
+    return null;
+  }
+  state.room = data;
+  return data;
 }
 
 async function joinRealtimeRoom() {
@@ -525,6 +570,7 @@ async function joinRealtimeRoom() {
   }
 
   if (state.realtimeChannel && state.realtimeRoomCode === state.roomCode) {
+    await loadRoom();
     await loadRoomPlayers();
     return;
   }
@@ -536,6 +582,7 @@ async function joinRealtimeRoom() {
       state.realtimeRoomCode = "";
     }
 
+    await loadRoom();
     await loadRoomPlayers();
 
     const topic = `hide-seek-${state.roomCode}-${state.session.user.id}`;
@@ -546,11 +593,26 @@ async function joinRealtimeRoom() {
         {
           event: "*",
           schema: "public",
+          table: "game_rooms",
+          filter: `room_code=eq.${state.roomCode}`,
+        },
+        async (payload) => {
+          applyRoomPayload(payload);
+          await handleRoomStateChange();
+          render();
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
           table: "game_players",
           filter: `room_code=eq.${state.roomCode}`,
         },
         (payload) => {
           applyRealtimePayload(payload);
+          handleAssignedTeam();
           render();
         },
       )
@@ -588,11 +650,108 @@ async function loadRoomPlayers() {
   }
 
   state.players = data.map(fromDatabasePlayer);
+  handleAssignedTeam();
+}
+
+function applyRoomPayload(payload) {
+  if (payload.eventType === "DELETE") {
+    state.room = null;
+    return;
+  }
+  if (payload.new?.room_code) {
+    state.room = payload.new;
+  }
+}
+
+async function handleRoomStateChange() {
+  if (state.room?.status === "ended") {
+    showGameEnded();
+    return;
+  }
+
+  if (state.room?.status === "started") {
+    await loadRoomPlayers();
+    const ownPlayer = getOwnPlayer();
+    if (ownPlayer?.team) {
+      state.team = ownPlayer.team;
+      enterGame();
+    } else if (state.phase === "waiting") {
+      setWaitingMessage("主持人已開始遊戲，但尚未分配到你的隊伍。");
+    }
+  }
+}
+
+function handleAssignedTeam() {
+  const ownPlayer = getOwnPlayer();
+  if (ownPlayer) {
+    state.hasPlayerRow = true;
+  }
+  if (ownPlayer?.team) {
+    state.team = ownPlayer.team;
+    if (state.room?.status === "started" && state.phase === "waiting") {
+      enterGame();
+    }
+  }
+}
+
+function getOwnPlayer() {
+  return state.players.find((player) => player.self);
+}
+
+function showWaiting() {
+  elements.waitingRoomTitle.textContent = `${state.roomCode.toUpperCase()} 房間`;
+  setWaitingMessage("已加入房間，請等待遊戲開始。");
+  showView("waiting");
+}
+
+function setWaitingMessage(message) {
+  elements.waitingMessage.textContent = message;
+}
+
+function enterGame() {
+  if (!state.team) return;
+  showView("game");
+  setTimeout(() => state.map.invalidateSize(), 50);
+  recenterMap();
+  syncOwnPlayer(true);
+  render();
+}
+
+function showGameEnded() {
+  if (state.endRedirectTimer) {
+    window.clearTimeout(state.endRedirectTimer);
+  }
+  state.players = [];
+  state.team = "";
+  state.room = null;
+  state.hasPlayerRow = false;
+  state.markers.forEach((marker) => marker.remove());
+  state.markers.clear();
+  showView("ended");
+  state.endRedirectTimer = window.setTimeout(() => {
+    returnToLobby();
+  }, 3000);
+}
+
+function returnToLobby() {
+  if (state.endRedirectTimer) {
+    window.clearTimeout(state.endRedirectTimer);
+    state.endRedirectTimer = null;
+  }
+  state.players = [];
+  state.team = "";
+  state.room = null;
+  state.hasPlayerRow = false;
+  showView("lobby");
+  render();
 }
 
 function applyRealtimePayload(payload) {
   if (payload.eventType === "DELETE" && payload.old?.user_id) {
     state.players = state.players.filter((player) => player.userId !== payload.old.user_id);
+    if (payload.old.user_id === state.session?.user?.id) {
+      state.hasPlayerRow = false;
+    }
     return;
   }
 
@@ -610,6 +769,12 @@ function applyRealtimePayload(payload) {
   } else {
     state.players.push(next);
   }
+  if (next.self && next.team) {
+    state.team = next.team;
+  }
+  if (next.self) {
+    state.hasPlayerRow = true;
+  }
 }
 
 function fromDatabasePlayer(record) {
@@ -619,7 +784,7 @@ function fromDatabasePlayer(record) {
     userId,
     email: record.email || "",
     name: record.display_name || record.email || "玩家",
-    team: record.team === "green" ? "green" : "red",
+    team: record.team || "",
     roomCode: record.room_code || state.roomCode,
     lat: Number(record.lat || DEFAULT_CENTER.lat),
     lng: Number(record.lng || DEFAULT_CENTER.lng),
@@ -631,17 +796,19 @@ function fromDatabasePlayer(record) {
 }
 
 async function syncOwnPlayer(force) {
-  if (!state.supabase || !state.session || !state.position) return;
+  if (!state.supabase || !state.session || !state.position || !state.room) return;
+  if (state.room.status !== "lobby" && state.room.status !== "started") return;
   if (document.visibilityState === "hidden") return;
   if (!force && Date.now() - state.lastSyncAt < LOCATION_SYNC_MS) return;
 
   state.lastSyncAt = Date.now();
   const user = state.session.user;
+  const ownPlayer = getOwnPlayer();
+  const assignedTeam = state.team || ownPlayer?.team || "";
   const payload = {
     user_id: user.id,
     email: user.email,
     display_name: state.playerName || getDisplayName(user),
-    team: state.team || "green",
     room_code: state.roomCode,
     lat: state.position.lat,
     lng: state.position.lng,
@@ -650,9 +817,17 @@ async function syncOwnPlayer(force) {
     updated_at: new Date().toISOString(),
   };
 
-  const { error } = await state.supabase.from("game_players").upsert(payload, {
-    onConflict: "user_id",
-  });
+  if (state.room.status === "lobby" || assignedTeam) {
+    payload.team = assignedTeam || null;
+  }
+
+  const result = state.hasPlayerRow
+    ? await state.supabase.from("game_players").update(payload).eq("user_id", user.id)
+    : await state.supabase.from("game_players").upsert(payload, {
+        onConflict: "user_id",
+      });
+
+  const { error } = result;
 
   if (error) {
     setHudStatus(error.message);
@@ -660,6 +835,7 @@ async function syncOwnPlayer(force) {
     return;
   }
 
+  state.hasPlayerRow = true;
   applyRealtimePayload({ eventType: "UPDATE", new: payload });
   setHudStatus(`定位同步中 · ±${state.accuracy || "--"}m`);
 }
@@ -671,10 +847,12 @@ async function markOffline() {
     .from("game_players")
     .delete()
     .eq("user_id", state.session.user.id);
+  state.hasPlayerRow = false;
 }
 
 function markOfflineWithKeepalive() {
   if (!state.config.url || !state.config.anonKey || !state.session?.access_token) return;
+  state.hasPlayerRow = false;
 
   const endpoint = `${state.config.url}/rest/v1/game_players?user_id=eq.${state.session.user.id}`;
 
@@ -710,7 +888,7 @@ function renderAuthSetup() {
 function renderHud() {
   const room = state.roomCode.toUpperCase();
   elements.hudTitle.textContent = `${room} 房間`;
-  elements.teamBadge.textContent = state.team === "red" ? "紅隊：尋找方" : state.team === "green" ? "綠隊：躲藏方" : "未選隊";
+  elements.teamBadge.textContent = state.team === "red" ? "紅隊" : state.team === "green" ? "綠隊" : "未分隊";
   elements.teamBadge.className = `team-badge ${state.team === "red" ? "red-badge" : state.team === "green" ? "green-badge" : ""}`;
 
   if (!elements.hudStatus.textContent || elements.hudStatus.textContent === "等待同步") {
@@ -723,11 +901,11 @@ function renderPlayers() {
   const hiddenCount = getSameRoomPlayers().length - players.length;
   const rows = players.map((player) => {
     const distance = state.position ? `${Math.round(distanceInMeters(state.position, player))}m` : "--";
-    const teamLabel = player.team === "red" ? "紅隊" : "綠隊";
+    const teamLabel = player.team === "red" ? "紅隊" : player.team === "green" ? "綠隊" : "未分隊";
     const onlineLabel = player.isOnline ? "在線" : "離線";
     return `
       <div class="player-row ${player.isOnline ? "" : "offline"}">
-        <span class="player-dot ${player.team === "red" ? "red-dot" : "green-dot"}"></span>
+        <span class="player-dot ${player.team === "red" ? "red-dot" : player.team === "green" ? "green-dot" : "hidden-dot"}"></span>
         <span>
           <strong>${escapeHtml(player.name)}${player.self ? "（你）" : ""}</strong>
           <small>${teamLabel} · ${onlineLabel} · ${distance}</small>
@@ -777,7 +955,7 @@ function renderMarkers() {
 
   players.forEach((player) => {
     const icon = L.divIcon({
-      html: `<span class="custom-marker marker-${player.team}${player.self ? " marker-self" : ""}">${player.self ? "我" : player.team === "red" ? "紅" : "綠"}</span>`,
+      html: `<span class="custom-marker marker-${player.team || "waiting"}${player.self ? " marker-self" : ""}">${player.self ? "我" : player.team === "red" ? "紅" : player.team === "green" ? "綠" : "等"}</span>`,
       className: "",
       iconSize: [32, 32],
       iconAnchor: [16, 16],
@@ -794,6 +972,9 @@ function renderMarkers() {
 
 function getVisiblePlayers() {
   const players = getSameRoomPlayers();
+  if (state.room?.status !== "started") {
+    return players.filter((player) => player.self);
+  }
   if (state.team === "red") {
     return players.filter((player) => player.self || player.team === "green");
   }

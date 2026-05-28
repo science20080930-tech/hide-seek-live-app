@@ -2,13 +2,25 @@ create table if not exists public.game_players (
   user_id uuid primary key references auth.users(id) on delete cascade,
   email text,
   display_name text not null,
-  team text not null check (team in ('red', 'green')),
+  team text check (team in ('red', 'green')),
   room_code text not null default 'main',
   lat double precision,
   lng double precision,
   accuracy integer,
   is_online boolean not null default true,
   updated_at timestamptz not null default now()
+);
+
+create table if not exists public.game_rooms (
+  room_code text primary key,
+  status text not null default 'lobby' check (status in ('lobby', 'started', 'ended')),
+  red_slots integer check (red_slots is null or red_slots >= 0),
+  green_slots integer check (green_slots is null or green_slots >= 0),
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  started_at timestamptz,
+  ended_at timestamptz
 );
 
 create table if not exists public.player_profiles (
@@ -32,13 +44,34 @@ create index if not exists game_players_updated_at_idx
   on public.game_players (updated_at desc);
 
 alter table public.game_players enable row level security;
+alter table public.game_rooms enable row level security;
 alter table public.player_profiles enable row level security;
 alter table public.control_operators enable row level security;
 
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on public.game_players to authenticated;
+grant select, insert, update, delete on public.game_rooms to authenticated;
 grant select, insert, update, delete on public.player_profiles to authenticated;
 grant select on public.control_operators to authenticated;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'game_players_team_check'
+      and conrelid = 'public.game_players'::regclass
+  ) then
+    alter table public.game_players drop constraint game_players_team_check;
+  end if;
+end $$;
+
+alter table public.game_players
+  alter column team drop not null;
+
+alter table public.game_players
+  add constraint game_players_team_check
+  check (team is null or team in ('red', 'green'));
 
 create or replace function public.is_control_operator()
 returns boolean
@@ -63,6 +96,35 @@ on public.control_operators
 for select
 to authenticated
 using (user_id = auth.uid());
+
+drop policy if exists "Authenticated users can read game rooms" on public.game_rooms;
+create policy "Authenticated users can read game rooms"
+on public.game_rooms
+for select
+to authenticated
+using (true);
+
+drop policy if exists "Operators can create game rooms" on public.game_rooms;
+create policy "Operators can create game rooms"
+on public.game_rooms
+for insert
+to authenticated
+with check (public.is_control_operator());
+
+drop policy if exists "Operators can update game rooms" on public.game_rooms;
+create policy "Operators can update game rooms"
+on public.game_rooms
+for update
+to authenticated
+using (public.is_control_operator())
+with check (public.is_control_operator());
+
+drop policy if exists "Operators can delete game rooms" on public.game_rooms;
+create policy "Operators can delete game rooms"
+on public.game_rooms
+for delete
+to authenticated
+using (public.is_control_operator());
 
 drop policy if exists "Players can read their own profile" on public.player_profiles;
 create policy "Players can read their own profile"
@@ -96,11 +158,14 @@ as $$
   select exists (
     select 1
     from public.game_players viewer
+    join public.game_rooms room
+      on room.room_code = viewer.room_code
     where viewer.user_id = auth.uid()
       and viewer.room_code = target_room
-      and (
-        viewer.team <> target_team
-      )
+      and viewer.team is not null
+      and target_team is not null
+      and viewer.team <> target_team
+      and room.status = 'started'
   );
 $$;
 
@@ -123,7 +188,15 @@ create policy "Players can create their own row"
 on public.game_players
 for insert
 to authenticated
-with check (user_id = auth.uid());
+with check (
+  user_id = auth.uid()
+  and exists (
+    select 1
+    from public.game_rooms room
+    where room.room_code = game_players.room_code
+      and room.status = 'lobby'
+  )
+);
 
 drop policy if exists "Players can update their own row" on public.game_players;
 create policy "Players can update their own row"
@@ -132,6 +205,21 @@ for update
 to authenticated
 using (user_id = auth.uid())
 with check (user_id = auth.uid());
+
+drop policy if exists "Operators can update all game players" on public.game_players;
+create policy "Operators can update all game players"
+on public.game_players
+for update
+to authenticated
+using (public.is_control_operator())
+with check (public.is_control_operator());
+
+drop policy if exists "Operators can delete all game players" on public.game_players;
+create policy "Operators can delete all game players"
+on public.game_players
+for delete
+to authenticated
+using (public.is_control_operator());
 
 drop policy if exists "Players can delete their own row" on public.game_players;
 create policy "Players can delete their own row"
@@ -143,6 +231,13 @@ using (user_id = auth.uid());
 do $$
 begin
   alter publication supabase_realtime add table public.game_players;
+exception
+  when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.game_rooms;
 exception
   when duplicate_object then null;
 end $$;

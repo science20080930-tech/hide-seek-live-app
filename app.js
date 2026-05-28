@@ -7,7 +7,7 @@ const CONFIG_KEY = "hide-seek-supabase-config";
 const LOCATION_SYNC_MS = 1_200;
 const ROOM_STATUS_POLL_MS = 1_500;
 const ACTIVE_PLAYER_MS = 120_000;
-const PRECISION_WARMUP_MS = 8000;
+const PRECISION_WARMUP_MS = 0;
 const PRECISION_SAMPLE_WINDOW_MS = 12000;
 const TARGET_ACCURACY_METERS = 20;
 
@@ -240,7 +240,7 @@ function startPreciseLocation() {
     {
       enableHighAccuracy: true,
       maximumAge: 0,
-      timeout: 30000,
+      timeout: 10000,
     },
   );
 }
@@ -580,6 +580,24 @@ async function joinRoom() {
 
 async function loadRoom() {
   if (!state.supabase || !state.session) return null;
+
+  try {
+    const rooms = await restRequest(
+      `game_rooms?select=room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at&room_code=eq.${encodeURIComponent(state.roomCode)}&limit=1`,
+      { method: "GET" },
+      "檢查房間逾時，請再按一次加入房間。",
+    );
+    const room = Array.isArray(rooms) ? rooms[0] : null;
+    if (!room) {
+      setLobbyMessage("房間不存在，請確認主持人已建立房間，或房間代碼是否正確。");
+      return null;
+    }
+    state.room = room;
+    return room;
+  } catch (error) {
+    setLobbyMessage(error.message || "檢查房間失敗，請再按一次加入房間。");
+    return null;
+  }
 
   const { data, error } = await withTimeout(
     state.supabase
@@ -1212,6 +1230,40 @@ function withTimeout(promise, message, timeoutMs = 20000) {
   return Promise.race([request, timeout]).finally(() => {
     window.clearTimeout(timeoutId);
   });
+}
+
+async function restRequest(path, options = {}, message = "連線逾時，請再試一次。", timeoutMs = 12000) {
+  if (!state.config.url || !state.config.anonKey) throw new Error("Supabase 尚未設定。");
+  if (!state.session?.access_token) throw new Error("請先登入。");
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(`${state.config.url}/rest/v1/${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        apikey: state.config.anonKey,
+        authorization: `Bearer ${state.session.access_token}`,
+        "content-type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(detail || `Supabase 回應錯誤：${response.status}`);
+    }
+
+    if (response.status === 204) return null;
+    return response.json();
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error(message);
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 function getDisplayName(user) {

@@ -605,12 +605,15 @@ async function loadRoom() {
 async function loadOwnPlayerRecord() {
   if (!state.supabase || !state.session) return null;
 
-  const { data, error } = await state.supabase
-    .from("game_players")
-    .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
-    .eq("room_code", state.roomCode)
-    .eq("user_id", state.session.user.id)
-    .maybeSingle();
+  const { data, error } = await withTimeout(
+    state.supabase
+      .from("game_players")
+      .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
+      .eq("room_code", state.roomCode)
+      .eq("user_id", state.session.user.id)
+      .maybeSingle(),
+    "讀取玩家資料逾時，請再按一次加入房間。",
+  );
 
   if (error) {
     setLobbyMessage(error.message);
@@ -634,20 +637,15 @@ async function joinRealtimeRoom() {
   }
 
   if (state.realtimeChannel && state.realtimeRoomCode === state.roomCode) {
-    await loadRoom();
-    await loadRoomPlayers();
     return;
   }
 
   state.realtimeJoinPromise = (async () => {
     if (state.realtimeChannel) {
-      await state.supabase.removeChannel(state.realtimeChannel);
+      state.supabase.removeChannel(state.realtimeChannel).catch(() => {});
       state.realtimeChannel = null;
       state.realtimeRoomCode = "";
     }
-
-    await loadRoom();
-    await loadRoomPlayers();
 
     const topic = `hide-seek-${state.roomCode}-${state.session.user.id}`;
     state.realtimeChannel = state.supabase
@@ -700,12 +698,15 @@ async function joinRealtimeRoom() {
 async function loadRoomPlayers() {
   if (!state.supabase || !state.session) return;
 
-  const { data, error } = await state.supabase
-    .from("game_players")
-    .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
-    .eq("room_code", state.roomCode)
-    .eq("is_online", true)
-    .order("updated_at", { ascending: false });
+  const { data, error } = await withTimeout(
+    state.supabase
+      .from("game_players")
+      .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
+      .eq("room_code", state.roomCode)
+      .eq("is_online", true)
+      .order("updated_at", { ascending: false }),
+    "讀取玩家位置逾時。",
+  );
 
   if (error) {
     setHudStatus(error.message);
@@ -1199,11 +1200,16 @@ function setHudStatus(text) {
 }
 
 function withTimeout(promise, message, timeoutMs = 20000) {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const request = controller && typeof promise?.abortSignal === "function" ? promise.abortSignal(controller.signal) : promise;
   let timeoutId;
   const timeout = new Promise((_, reject) => {
-    timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    timeoutId = window.setTimeout(() => {
+      controller?.abort();
+      reject(new Error(message));
+    }, timeoutMs);
   });
-  return Promise.race([promise, timeout]).finally(() => {
+  return Promise.race([request, timeout]).finally(() => {
     window.clearTimeout(timeoutId);
   });
 }

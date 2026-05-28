@@ -159,6 +159,9 @@ function bindEvents() {
   elements.roomCode.addEventListener("change", (event) => {
     state.roomCode = cleanRoomCode(event.target.value);
     elements.roomCode.value = state.roomCode;
+    state.room = null;
+    state.players = [];
+    state.hasPlayerRow = false;
     saveState();
     render();
   });
@@ -449,10 +452,22 @@ async function signInWithEmail() {
     return;
   }
 
-  const { error } = await state.supabase.auth.signInWithPassword({ email, password });
+  elements.emailSignInButton.disabled = true;
+  setAuthMessage("正在登入...");
+  const { data, error } = await state.supabase.auth.signInWithPassword({ email, password });
+  elements.emailSignInButton.disabled = false;
   if (error) {
     setAuthMessage(error.message);
+    return;
   }
+
+  state.session = data.session;
+  setAuthControls(Boolean(state.session));
+  setAuthMessage("");
+  if (state.locationGranted) {
+    showView("lobby");
+  }
+  render();
 }
 
 async function signOut() {
@@ -520,20 +535,22 @@ async function joinRoom() {
     return;
   }
 
-  await joinRealtimeRoom();
-  await loadRoomPlayers();
-
-  const ownPlayer = getOwnPlayer();
   if (room.status === "started") {
-    if (!ownPlayer?.team) {
+    const ownRecord = await loadOwnPlayerRecord();
+    if (!ownRecord?.team) {
       setLobbyMessage("這個房間已經開始，未被主持人分隊的玩家不能加入。");
       return;
     }
-    state.team = ownPlayer.team;
+    state.team = ownRecord.team;
+    state.hasPlayerRow = true;
+    await joinRealtimeRoom();
+    await syncOwnPlayer(true);
     enterGame();
     return;
   }
 
+  await joinRealtimeRoom();
+  await loadRoomPlayers();
   state.team = "";
   await syncOwnPlayer(true);
   if (!state.hasPlayerRow) return;
@@ -560,6 +577,30 @@ async function loadRoom() {
   }
   state.room = data;
   return data;
+}
+
+async function loadOwnPlayerRecord() {
+  if (!state.supabase || !state.session) return null;
+
+  const { data, error } = await state.supabase
+    .from("game_players")
+    .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
+    .eq("room_code", state.roomCode)
+    .eq("user_id", state.session.user.id)
+    .maybeSingle();
+
+  if (error) {
+    setLobbyMessage(error.message);
+    return null;
+  }
+
+  if (data?.team) {
+    state.team = data.team;
+  }
+  if (data) {
+    state.hasPlayerRow = true;
+  }
+  return data ? fromDatabasePlayer(data) : null;
 }
 
 async function joinRealtimeRoom() {
@@ -671,9 +712,11 @@ async function handleRoomStateChange() {
 
   if (state.room?.status === "started") {
     await loadRoomPlayers();
+    const ownRecord = await loadOwnPlayerRecord();
     const ownPlayer = getOwnPlayer();
-    if (ownPlayer?.team) {
-      state.team = ownPlayer.team;
+    const assignedTeam = ownRecord?.team || ownPlayer?.team || "";
+    if (assignedTeam) {
+      state.team = assignedTeam;
       enterGame();
     } else if (state.phase === "waiting") {
       setWaitingMessage("主持人已開始遊戲，但尚未分配到你的隊伍。");
@@ -797,6 +840,7 @@ function fromDatabasePlayer(record) {
 
 async function syncOwnPlayer(force) {
   if (!state.supabase || !state.session || !state.position || !state.room) return;
+  if (state.room.room_code !== state.roomCode) return;
   if (state.room.status !== "lobby" && state.room.status !== "started") return;
   if (document.visibilityState === "hidden") return;
   if (!force && Date.now() - state.lastSyncAt < LOCATION_SYNC_MS) return;
@@ -845,7 +889,13 @@ async function markOffline() {
 
   await state.supabase
     .from("game_players")
-    .delete()
+    .update({
+      lat: null,
+      lng: null,
+      accuracy: null,
+      is_online: false,
+      updated_at: new Date().toISOString(),
+    })
     .eq("user_id", state.session.user.id);
   state.hasPlayerRow = false;
 }
@@ -857,12 +907,20 @@ function markOfflineWithKeepalive() {
   const endpoint = `${state.config.url}/rest/v1/game_players?user_id=eq.${state.session.user.id}`;
 
   fetch(endpoint, {
-    method: "DELETE",
+    method: "PATCH",
     headers: {
       apikey: state.config.anonKey,
       authorization: `Bearer ${state.session.access_token}`,
+      "content-type": "application/json",
       prefer: "return=minimal",
     },
+    body: JSON.stringify({
+      lat: null,
+      lng: null,
+      accuracy: null,
+      is_online: false,
+      updated_at: new Date().toISOString(),
+    }),
     keepalive: true,
   }).catch(() => {});
 }

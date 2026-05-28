@@ -567,6 +567,8 @@ async function joinRoom() {
     setLobbyMessage("");
     showWaiting();
     render();
+  } catch (error) {
+    setLobbyMessage(error.message || "加入房間失敗，請再試一次。");
   } finally {
     state.joinInProgress = false;
     elements.startGameButton.disabled = false;
@@ -576,11 +578,14 @@ async function joinRoom() {
 async function loadRoom() {
   if (!state.supabase || !state.session) return null;
 
-  const { data, error } = await state.supabase
-    .from("game_rooms")
-    .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
-    .eq("room_code", state.roomCode)
-    .maybeSingle();
+  const { data, error } = await withTimeout(
+    state.supabase
+      .from("game_rooms")
+      .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
+      .eq("room_code", state.roomCode)
+      .maybeSingle(),
+    "檢查房間逾時，請再按一次加入房間。",
+  );
 
   if (error) {
     setLobbyMessage(`${error.message}。請確認主持人已建立房間，且 Supabase schema 已更新。`);
@@ -677,7 +682,7 @@ async function joinRealtimeRoom() {
           state.realtimeRoomCode = state.roomCode;
           setHudStatus("即時同步中");
         } else if (status === "CHANNEL_ERROR") {
-          setHudStatus("同步連線失敗");
+          setHudStatus("使用輪詢同步中");
         }
       });
   })();
@@ -904,11 +909,13 @@ async function syncOwnPlayer(force) {
     payload.team = assignedTeam || null;
   }
 
-  const result = state.hasPlayerRow
-    ? await state.supabase.from("game_players").update(payload).eq("user_id", user.id)
-    : await state.supabase.from("game_players").upsert(payload, {
+  const query = state.hasPlayerRow
+    ? state.supabase.from("game_players").update(payload).eq("user_id", user.id)
+    : state.supabase.from("game_players").upsert(payload, {
         onConflict: "user_id",
       });
+
+  const result = await withTimeout(query, "同步定位逾時，請再按一次加入房間。");
 
   const { error } = result;
 
@@ -1157,6 +1164,16 @@ function setLobbyMessage(text) {
 
 function setHudStatus(text) {
   elements.hudStatus.textContent = text;
+}
+
+function withTimeout(promise, message, timeoutMs = 10000) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    window.clearTimeout(timeoutId);
+  });
 }
 
 function getDisplayName(user) {

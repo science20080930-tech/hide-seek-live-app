@@ -5,6 +5,7 @@ const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
 const STORAGE_KEY = "hide-seek-live-state-v3";
 const CONFIG_KEY = "hide-seek-supabase-config";
 const LOCATION_SYNC_MS = 500;
+const ROOM_STATUS_POLL_MS = 1000;
 const ACTIVE_PLAYER_MS = 8_000;
 const PRECISION_WARMUP_MS = 8000;
 const PRECISION_SAMPLE_WINDOW_MS = 12000;
@@ -34,6 +35,7 @@ const state = {
   watchId: null,
   heartbeatId: null,
   lastSyncAt: 0,
+  lastRoomPollAt: 0,
   precisionStartedAt: 0,
   locationSamples: [],
   players: [],
@@ -312,6 +314,7 @@ function startLocationHeartbeat() {
   state.heartbeatId = window.setInterval(() => {
     if (document.visibilityState === "visible") {
       syncOwnPlayer(false);
+      pollRoomStatus(false);
     }
   }, LOCATION_SYNC_MS);
 }
@@ -736,6 +739,27 @@ async function handleRoomStateChange() {
   }
 }
 
+async function pollRoomStatus(force) {
+  if (!state.supabase || !state.session) return;
+  if (!["waiting", "game"].includes(state.phase)) return;
+  if (!force && Date.now() - state.lastRoomPollAt < ROOM_STATUS_POLL_MS) return;
+
+  state.lastRoomPollAt = Date.now();
+  const { data, error } = await state.supabase
+    .from("game_rooms")
+    .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
+    .eq("room_code", state.roomCode)
+    .maybeSingle();
+
+  if (error || !data) return;
+
+  state.room = data;
+  if (data.status === "ended" || (data.status === "started" && state.phase === "waiting")) {
+    await handleRoomStateChange();
+    render();
+  }
+}
+
 function handleAssignedTeam() {
   const ownPlayer = getOwnPlayer();
   if (ownPlayer) {
@@ -757,6 +781,7 @@ function showWaiting() {
   elements.waitingRoomTitle.textContent = `${state.roomCode.toUpperCase()} 房間`;
   setWaitingMessage("已加入房間，請等待遊戲開始。");
   showView("waiting");
+  pollRoomStatus(true);
 }
 
 function setWaitingMessage(message) {
@@ -769,6 +794,7 @@ function enterGame() {
   setTimeout(() => state.map.invalidateSize(), 50);
   recenterMap();
   syncOwnPlayer(true);
+  pollRoomStatus(true);
   render();
 }
 

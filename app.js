@@ -7,6 +7,7 @@ const CONFIG_KEY = "hide-seek-supabase-config";
 const LOCATION_SYNC_MS = 1_200;
 const LOCATION_REFRESH_MS = 3_000;
 const ROOM_STATUS_POLL_MS = 1_500;
+const APP_READ_TIMEOUT_MS = 45_000;
 const ACTIVE_PLAYER_MS = 15_000;
 const PRECISION_WARMUP_MS = 0;
 const PRECISION_SAMPLE_WINDOW_MS = 12000;
@@ -832,22 +833,31 @@ async function joinRealtimeRoom() {
 async function loadRoomPlayers() {
   if (!state.supabase || !state.session) return;
 
-  const { data, error } = await withTimeout(
-    state.supabase
-      .from("game_players")
-      .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
-      .eq("room_code", state.roomCode)
-      .eq("is_online", true)
-      .order("updated_at", { ascending: false }),
-    "讀取玩家位置逾時。",
-  );
+  let result;
+  try {
+    result = await withTimeout(
+      state.supabase
+        .from("game_players")
+        .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
+        .eq("room_code", state.roomCode)
+        .eq("is_online", true)
+        .order("updated_at", { ascending: false }),
+      "讀取玩家位置逾時。",
+      APP_READ_TIMEOUT_MS,
+    );
+  } catch (error) {
+    setHudStatus(state.players.length ? "連線暫時不穩，沿用上一筆玩家位置。" : error.message);
+    return;
+  }
+
+  const { data, error } = result;
 
   if (error) {
     setHudStatus(error.message);
     return;
   }
 
-  state.players = data.map(fromDatabasePlayer);
+  state.players = (data || []).map(fromDatabasePlayer);
   handleAssignedTeam();
 }
 
@@ -898,6 +908,7 @@ async function pollRoomStatus(force) {
         .eq("room_code", state.roomCode)
         .maybeSingle(),
       "檢查房間狀態逾時。",
+      APP_READ_TIMEOUT_MS,
     );
 
     if (error || !data) return;

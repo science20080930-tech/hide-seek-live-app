@@ -374,6 +374,36 @@ input {
   outline: 3px solid #1d4ed8;
 }
 
+.broadcast-toast {
+  position: fixed;
+  z-index: 1000;
+  top: 14px;
+  right: 14px;
+  width: min(340px, calc(100vw - 28px));
+  padding: 14px 44px 14px 14px;
+  border: 1px solid #b9d6c6;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow);
+}
+
+.broadcast-toast p {
+  margin-bottom: 0;
+}
+
+.toast-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-color: var(--line);
+  background: white;
+  color: var(--ink);
+}
+
 @media (max-width: 720px) {
   .view {
     padding: 16px;

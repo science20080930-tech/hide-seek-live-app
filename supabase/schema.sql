@@ -23,6 +23,11 @@ create table if not exists public.game_rooms (
   ended_at timestamptz
 );
 
+alter table public.game_rooms
+  add column if not exists broadcast_message text,
+  add column if not exists broadcast_sender text,
+  add column if not exists broadcast_at timestamptz;
+
 create table if not exists public.player_profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
   email text,

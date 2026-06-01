@@ -5,11 +5,13 @@ const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
 const STORAGE_KEY = "hide-seek-live-state-v3";
 const CONFIG_KEY = "hide-seek-supabase-config";
 const LOCATION_SYNC_MS = 1_200;
+const LOCATION_REFRESH_MS = 3_000;
 const ROOM_STATUS_POLL_MS = 1_500;
-const ACTIVE_PLAYER_MS = 120_000;
+const ACTIVE_PLAYER_MS = 15_000;
 const PRECISION_WARMUP_MS = 0;
 const PRECISION_SAMPLE_WINDOW_MS = 12000;
 const TARGET_ACCURACY_METERS = 20;
+const ROOM_SELECT = "*";
 
 const state = {
   phase: "location",
@@ -34,14 +36,21 @@ const state = {
   usingMockLocation: false,
   watchId: null,
   heartbeatId: null,
+  permissionMonitorId: null,
   lastSyncAt: 0,
   lastRoomPollAt: 0,
+  lastLocationFixAt: 0,
+  locationRefreshInProgress: false,
+  permissionCheckInProgress: false,
+  locationPermissionStatusBound: false,
+  locationPermissionBlocked: false,
   syncInProgress: false,
   syncPromise: null,
   roomPollInProgress: false,
   precisionStartedAt: 0,
   locationSamples: [],
   players: [],
+  lastBroadcastAt: "",
 };
 
 const views = {
@@ -80,6 +89,9 @@ const elements = {
   hudStatus: document.querySelector("#hudStatus"),
   teamBadge: document.querySelector("#teamBadge"),
   playerList: document.querySelector("#playerList"),
+  broadcastToast: document.querySelector("#broadcastToast"),
+  broadcastText: document.querySelector("#broadcastText"),
+  closeBroadcastButton: document.querySelector("#closeBroadcastButton"),
   leafletMap: document.querySelector("#leafletMap"),
 };
 
@@ -90,6 +102,7 @@ async function boot() {
   restoreConfig();
   bindEvents();
   initMap();
+  startLocationPermissionMonitor();
   await connectSupabaseIfConfigured();
   showView("location");
   requestLocationOnEntry();
@@ -106,6 +119,7 @@ function restoreState() {
     state.accuracy = saved.accuracy || null;
     state.locationGranted = Boolean(saved.locationGranted);
     state.usingMockLocation = Boolean(saved.usingMockLocation);
+    state.lastBroadcastAt = saved.lastBroadcastAt || "";
   } catch {
     state.team = "";
   }
@@ -143,13 +157,14 @@ function saveState() {
       accuracy: state.accuracy,
       locationGranted: state.locationGranted,
       usingMockLocation: state.usingMockLocation,
+      lastBroadcastAt: state.lastBroadcastAt,
     }),
   );
 }
 
 function bindEvents() {
   elements.grantLocationButton.addEventListener("click", startPreciseLocation);
-  elements.mockLocationButton.addEventListener("click", useMockLocation);
+  elements.mockLocationButton?.addEventListener("click", useMockLocation);
   elements.saveSupabaseButton.addEventListener("click", saveSupabaseConfig);
   elements.googleLoginButton?.addEventListener("click", signInWithGoogle);
   elements.emailSignUpButton.addEventListener("click", signUpWithEmail);
@@ -161,6 +176,7 @@ function bindEvents() {
     returnToLobby();
   });
   elements.recenterButton.addEventListener("click", recenterMap);
+  elements.closeBroadcastButton.addEventListener("click", closeBroadcastToast);
 
   elements.roomCode.addEventListener("change", (event) => {
     state.roomCode = cleanRoomCode(event.target.value);
@@ -226,16 +242,22 @@ function startPreciseLocation() {
 
   state.precisionStartedAt = Date.now();
   state.locationSamples = [];
+  state.locationPermissionBlocked = false;
+  bindLocationPermissionWatcher();
 
   state.watchId = navigator.geolocation.watchPosition(
     handlePrecisePosition,
     (error) => {
+      if (error.code === 1) {
+        disconnectForLocationOff();
+      }
       const messages = {
         1: "定位授權被拒絕，請允許位置權限後再繼續。",
         2: "目前無法取得位置，請稍後重試。",
         3: "定位逾時，請再按一次允許定位。",
       };
       setLocationMessage(messages[error.code] || "定位失敗，請重試。");
+      markLocationDisconnected();
     },
     {
       enableHighAccuracy: true,
@@ -245,7 +267,10 @@ function startPreciseLocation() {
   );
 }
 
-function handlePrecisePosition(position) {
+async function handlePrecisePosition(position) {
+  if (state.locationPermissionBlocked) return;
+  if (!(await ensureLocationPermissionForSync())) return;
+
   const fix = {
     lat: position.coords.latitude,
     lng: position.coords.longitude,
@@ -255,6 +280,7 @@ function handlePrecisePosition(position) {
 
   state.locationGranted = true;
   state.usingMockLocation = false;
+  state.lastLocationFixAt = fix.capturedAt;
   rememberLocationFix(fix);
 
   const bestFix = getBestRecentFix();
@@ -304,6 +330,7 @@ function useMockLocation() {
     lng: DEFAULT_CENTER.lng + randomOffset(40),
   };
   state.accuracy = 8;
+  state.lastLocationFixAt = Date.now();
   saveState();
   setLocationMessage("目前使用模擬位置。");
   showNextAfterLocation();
@@ -314,12 +341,100 @@ function useMockLocation() {
 
 function startLocationHeartbeat() {
   if (state.heartbeatId !== null) return;
-  state.heartbeatId = window.setInterval(() => {
+  state.heartbeatId = window.setInterval(async () => {
     if (document.visibilityState === "visible") {
+      const permissionOk = await checkLocationPermissionStillGranted();
+      if (!permissionOk) return;
+      requestFreshLocationIfNeeded();
       syncOwnPlayer(false);
       pollRoomStatus(false);
     }
   }, LOCATION_SYNC_MS);
+}
+
+function startLocationPermissionMonitor() {
+  if (state.permissionMonitorId !== null) return;
+  state.permissionMonitorId = window.setInterval(() => {
+    checkLocationPermissionStillGranted();
+  }, LOCATION_SYNC_MS);
+}
+
+async function bindLocationPermissionWatcher() {
+  if (state.usingMockLocation || state.locationPermissionStatusBound || !navigator.permissions?.query) return;
+
+  try {
+    const permission = await navigator.permissions.query({ name: "geolocation" });
+    state.locationPermissionStatusBound = true;
+    permission.onchange = () => {
+      if (permission.state === "denied") {
+        disconnectForLocationOff();
+      }
+    };
+    if (state.locationGranted && permission.state === "denied") {
+      disconnectForLocationOff();
+    }
+  } catch {
+    // Browsers without Permissions API still use watchPosition error handling.
+  }
+}
+
+async function checkLocationPermissionStillGranted() {
+  if (state.usingMockLocation || !navigator.permissions?.query) return true;
+  if (!state.locationGranted && !state.hasPlayerRow) return true;
+  if (state.permissionCheckInProgress) return true;
+
+  state.permissionCheckInProgress = true;
+  try {
+    const permission = await navigator.permissions.query({ name: "geolocation" });
+    if (!state.locationPermissionStatusBound) {
+      state.locationPermissionStatusBound = true;
+      permission.onchange = () => {
+        if (permission.state === "denied") {
+          state.locationPermissionBlocked = true;
+          if (state.watchId !== null) {
+            navigator.geolocation.clearWatch(state.watchId);
+            state.watchId = null;
+          }
+          markLocationDisconnected();
+          render();
+        }
+      };
+    }
+    if (permission.state === "denied") {
+      await disconnectForLocationOff();
+      render();
+      return false;
+    }
+    return true;
+  } catch {
+    return true;
+  } finally {
+    state.permissionCheckInProgress = false;
+  }
+}
+
+function requestFreshLocationIfNeeded() {
+  if (state.usingMockLocation || state.locationRefreshInProgress || !("geolocation" in navigator)) return;
+  if (!state.lastLocationFixAt || Date.now() - state.lastLocationFixAt < LOCATION_REFRESH_MS) return;
+
+  state.locationRefreshInProgress = true;
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      state.locationRefreshInProgress = false;
+      handlePrecisePosition(position);
+    },
+    (error) => {
+      state.locationRefreshInProgress = false;
+      if (error.code === 1) {
+        disconnectForLocationOff();
+      }
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: 8000,
+    },
+  );
 }
 
 function showNextAfterLocation() {
@@ -583,7 +698,7 @@ async function loadRoom() {
 
   try {
     const rooms = await restRequest(
-      `game_rooms?select=room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at&room_code=eq.${encodeURIComponent(state.roomCode)}&limit=1`,
+      `game_rooms?select=${ROOM_SELECT}&room_code=eq.${encodeURIComponent(state.roomCode)}&limit=1`,
       { method: "GET" },
       "檢查房間逾時，請再按一次加入房間。",
     );
@@ -593,6 +708,7 @@ async function loadRoom() {
       return null;
     }
     state.room = room;
+    showBroadcastIfNeeded(room);
     return room;
   } catch (error) {
     setLobbyMessage(error.message || "檢查房間失敗，請再按一次加入房間。");
@@ -602,7 +718,7 @@ async function loadRoom() {
   const { data, error } = await withTimeout(
     state.supabase
       .from("game_rooms")
-      .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
+      .select(ROOM_SELECT)
       .eq("room_code", state.roomCode)
       .maybeSingle(),
     "檢查房間逾時，請再按一次加入房間。",
@@ -742,6 +858,7 @@ function applyRoomPayload(payload) {
   }
   if (payload.new?.room_code) {
     state.room = payload.new;
+    showBroadcastIfNeeded(payload.new);
   }
 }
 
@@ -777,7 +894,7 @@ async function pollRoomStatus(force) {
     const { data, error } = await withTimeout(
       state.supabase
         .from("game_rooms")
-        .select("room_code,status,red_slots,green_slots,created_by,updated_at,started_at,ended_at")
+        .select(ROOM_SELECT)
         .eq("room_code", state.roomCode)
         .maybeSingle(),
       "檢查房間狀態逾時。",
@@ -786,6 +903,7 @@ async function pollRoomStatus(force) {
     if (error || !data) return;
 
     state.room = data;
+    showBroadcastIfNeeded(data);
     if (data.status === "ended" || (data.status === "started" && state.phase === "waiting")) {
       await handleRoomStateChange();
       render();
@@ -876,11 +994,6 @@ function applyRealtimePayload(payload) {
   if (!payload.new?.user_id) return;
 
   const next = fromDatabasePlayer(payload.new);
-  if (!isPlayerActive(next)) {
-    state.players = state.players.filter((player) => player.userId !== next.userId);
-    return;
-  }
-
   const existingIndex = state.players.findIndex((player) => player.userId === next.userId);
   if (existingIndex >= 0) {
     state.players[existingIndex] = next;
@@ -904,8 +1017,8 @@ function fromDatabasePlayer(record) {
     name: record.display_name || record.email || "玩家",
     team: record.team || "",
     roomCode: record.room_code || state.roomCode,
-    lat: Number(record.lat || DEFAULT_CENTER.lat),
-    lng: Number(record.lng || DEFAULT_CENTER.lng),
+    lat: record.lat === null || record.lat === undefined ? null : Number(record.lat),
+    lng: record.lng === null || record.lng === undefined ? null : Number(record.lng),
     accuracy: record.accuracy || 0,
     isOnline: record.is_online !== false,
     updatedAt: record.updated_at,
@@ -924,6 +1037,7 @@ function canSyncOwnPlayer() {
 
 async function syncOwnPlayer(force) {
   if (!canSyncOwnPlayer()) return;
+  if (!(await ensureLocationPermissionForSync())) return;
 
   if (state.syncPromise) {
     if (!force) return state.syncPromise.catch(() => {});
@@ -931,6 +1045,7 @@ async function syncOwnPlayer(force) {
   }
 
   if (!canSyncOwnPlayer()) return;
+  if (!(await ensureLocationPermissionForSync())) return;
   if (!force && Date.now() - state.lastSyncAt < LOCATION_SYNC_MS) return;
 
   state.syncInProgress = true;
@@ -984,6 +1099,36 @@ async function syncOwnPlayer(force) {
   }
 }
 
+async function ensureLocationPermissionForSync() {
+  if (state.usingMockLocation || !navigator.permissions?.query) return true;
+  if (!state.locationGranted && !state.hasPlayerRow) return true;
+
+  try {
+    const permission = await navigator.permissions.query({ name: "geolocation" });
+    if (permission.state !== "denied") return true;
+  } catch {
+    return true;
+  }
+
+  state.locationPermissionBlocked = true;
+  if (state.watchId !== null) {
+    navigator.geolocation.clearWatch(state.watchId);
+    state.watchId = null;
+  }
+  await markLocationDisconnected();
+  render();
+  return false;
+}
+
+async function disconnectForLocationOff() {
+  state.locationPermissionBlocked = true;
+  if (state.watchId !== null) {
+    navigator.geolocation.clearWatch(state.watchId);
+    state.watchId = null;
+  }
+  await markLocationDisconnected();
+}
+
 async function markOffline() {
   if (!state.supabase || !state.session) return;
 
@@ -998,6 +1143,39 @@ async function markOffline() {
     })
     .eq("user_id", state.session.user.id);
   state.hasPlayerRow = false;
+}
+
+async function markLocationDisconnected() {
+  if (!state.supabase || !state.session) return;
+
+  const payload = {
+    lat: null,
+    lng: null,
+    accuracy: null,
+    is_online: false,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    await state.supabase.from("game_players").update(payload).eq("user_id", state.session.user.id);
+  } catch {
+    // The control panel also marks stale heartbeats as disconnected.
+  }
+
+  state.hasPlayerRow = false;
+  applyRealtimePayload({
+    eventType: "UPDATE",
+    new: {
+      user_id: state.session.user.id,
+      email: state.session.user.email,
+      display_name: state.playerName || getDisplayName(state.session.user),
+      team: state.team || null,
+      room_code: state.roomCode,
+      ...payload,
+    },
+  });
+  setHudStatus("定位已關閉，主控台會顯示你已斷開連線。");
+  render();
 }
 
 function markOfflineWithKeepalive() {
@@ -1031,6 +1209,23 @@ function render() {
   renderPlayers();
   renderMarkers();
   saveState();
+}
+
+function showBroadcastIfNeeded(room) {
+  if (!room?.broadcast_message || !room.broadcast_at) return;
+  if (room.broadcast_at === state.lastBroadcastAt) return;
+  state.lastBroadcastAt = room.broadcast_at;
+  elements.broadcastText.textContent = room.broadcast_message;
+  elements.broadcastToast.classList.remove("hidden");
+  saveState();
+}
+
+function closeBroadcastToast() {
+  elements.broadcastToast.classList.add("hidden");
+  if (state.room?.broadcast_at) {
+    state.lastBroadcastAt = state.room.broadcast_at;
+    saveState();
+  }
 }
 
 function renderAuthSetup() {
@@ -1101,7 +1296,7 @@ function renderPlayers() {
 }
 
 function renderMarkers() {
-  const players = getVisiblePlayers();
+  const players = getVisiblePlayers().filter(hasValidCoordinates);
   const visibleIds = new Set(players.map((player) => player.id));
 
   state.markers.forEach((marker, id) => {
@@ -1126,6 +1321,10 @@ function renderMarkers() {
       state.markers.get(player.id).setLatLng(latLng).setIcon(icon);
     }
   });
+}
+
+function hasValidCoordinates(player) {
+  return Number.isFinite(player.lat) && Number.isFinite(player.lng);
 }
 
 function getVisiblePlayers() {

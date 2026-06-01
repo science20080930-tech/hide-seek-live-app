@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://unpkg.com" />
     <link rel="preconnect" href="https://esm.sh" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="./styles.css?v=20260529-rest-fix" />
+    <link rel="stylesheet" href="./styles.css?v=20260601-guard-message" />
   </head>
   <body>
     <main class="stage">
@@ -17,7 +17,7 @@
           <h1>先允許精確定位</h1>
           <p class="lead">遊戲會持續更新你的位置，直到你關閉瀏覽器或登出。</p>
           <button id="grantLocationButton" class="primary-action" type="button">允許定位並繼續</button>
-          <button id="mockLocationButton" class="secondary-action" type="button">先用模擬位置測試</button>
+          <button id="mockLocationButton" class="secondary-action hidden" type="button" hidden>先用模擬位置測試</button>
           <p id="locationMessage" class="message-line" aria-live="polite"></p>
         </div>
       </section>
@@ -119,7 +119,13 @@
       </section>
     </main>
 
+    <div id="broadcastToast" class="broadcast-toast hidden" role="status" aria-live="polite">
+      <button id="closeBroadcastButton" class="toast-close" type="button" aria-label="關閉訊息">×</button>
+      <p class="eyebrow">主持人訊息</p>
+      <p id="broadcastText"></p>
+    </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="./app.js?v=20260529-rest-fix" type="module"></script>
+    <script src="./app.js?v=20260601-guard-message" type="module"></script>
   </body>
 </html>

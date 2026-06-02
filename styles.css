@@ -286,6 +286,51 @@ input {
   border-color: #9bd9bd;
 }
 
+.code-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdfb;
+}
+
+.code-score {
+  color: var(--red);
+  font-weight: 900;
+}
+
+.code-display {
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--green-soft);
+  color: var(--green);
+  font-size: 0.95rem;
+  font-weight: 900;
+}
+
+.captured-message {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #f0aaa6;
+  border-radius: 8px;
+  background: var(--red-soft);
+  color: #9f2525;
+  font-weight: 900;
+  line-height: 1.45;
+}
+
+.code-input-area {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.code-input-area input {
+  margin-top: 0;
+  text-transform: uppercase;
+}
+
 .player-list {
   display: grid;
   gap: 8px;
@@ -305,6 +350,15 @@ input {
 
 .player-row.offline {
   opacity: 0.55;
+}
+
+.player-row.captured {
+  border-color: #f0aaa6;
+  background: var(--red-soft);
+}
+
+.player-row.captured strong {
+  color: #9f2525;
 }
 
 .player-row strong {
@@ -372,6 +426,11 @@ input {
 
 .marker-self {
   outline: 3px solid #1d4ed8;
+}
+
+.marker-captured {
+  filter: grayscale(0.95);
+  opacity: 0.7;
 }
 
 .broadcast-toast {

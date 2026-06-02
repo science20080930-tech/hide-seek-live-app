@@ -110,6 +110,16 @@
             </div>
             <span id="teamBadge" class="team-badge">未選隊</span>
           </div>
+          <div id="codePanel" class="code-panel hidden">
+            <div id="codeScore" class="code-score">紅隊捕獲：0</div>
+            <div id="codeDisplay" class="code-display hidden"></div>
+            <p id="capturedMessage" class="captured-message hidden">你已被捕獲，請等待救援。</p>
+            <div id="codeInputArea" class="code-input-area hidden">
+              <input id="gameCodeInput" type="text" maxlength="12" placeholder="輸入代碼" autocomplete="off" />
+              <button id="submitCodeButton" class="primary-action" type="button">送出</button>
+            </div>
+            <p id="codeActionMessage" class="message-line" aria-live="polite"></p>
+          </div>
           <div id="playerList" class="player-list" aria-live="polite"></div>
           <div class="hud-actions">
             <button id="recenterButton" class="secondary-action" type="button">回到我的位置</button>
@@ -126,6 +136,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="./app.js?v=20260601-guard-message" type="module"></script>
+    <script src="./app.js?v=20260602-capture-rescue" type="module"></script>
   </body>
 </html>

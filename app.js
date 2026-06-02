@@ -13,6 +13,8 @@ const PRECISION_WARMUP_MS = 0;
 const PRECISION_SAMPLE_WINDOW_MS = 12000;
 const TARGET_ACCURACY_METERS = 20;
 const ROOM_SELECT = "*";
+const PLAYER_SELECT =
+  "user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at,capture_code,rescue_code,is_captured,captured_at";
 
 const state = {
   phase: "location",
@@ -90,6 +92,14 @@ const elements = {
   hudStatus: document.querySelector("#hudStatus"),
   teamBadge: document.querySelector("#teamBadge"),
   playerList: document.querySelector("#playerList"),
+  codePanel: document.querySelector("#codePanel"),
+  codeScore: document.querySelector("#codeScore"),
+  codeDisplay: document.querySelector("#codeDisplay"),
+  capturedMessage: document.querySelector("#capturedMessage"),
+  codeInputArea: document.querySelector("#codeInputArea"),
+  gameCodeInput: document.querySelector("#gameCodeInput"),
+  submitCodeButton: document.querySelector("#submitCodeButton"),
+  codeActionMessage: document.querySelector("#codeActionMessage"),
   broadcastToast: document.querySelector("#broadcastToast"),
   broadcastText: document.querySelector("#broadcastText"),
   closeBroadcastButton: document.querySelector("#closeBroadcastButton"),
@@ -178,6 +188,12 @@ function bindEvents() {
   });
   elements.recenterButton.addEventListener("click", recenterMap);
   elements.closeBroadcastButton.addEventListener("click", closeBroadcastToast);
+  elements.submitCodeButton.addEventListener("click", submitGameCode);
+  elements.gameCodeInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      submitGameCode();
+    }
+  });
 
   elements.roomCode.addEventListener("change", (event) => {
     state.roomCode = cleanRoomCode(event.target.value);
@@ -743,7 +759,7 @@ async function loadOwnPlayerRecord() {
   const { data, error } = await withTimeout(
     state.supabase
       .from("game_players")
-      .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
+      .select(PLAYER_SELECT)
       .eq("room_code", state.roomCode)
       .eq("user_id", state.session.user.id)
       .maybeSingle(),
@@ -838,7 +854,7 @@ async function loadRoomPlayers() {
     result = await withTimeout(
       state.supabase
         .from("game_players")
-        .select("user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at")
+        .select(PLAYER_SELECT)
         .eq("room_code", state.roomCode)
         .eq("is_online", true)
         .order("updated_at", { ascending: false }),
@@ -1033,6 +1049,10 @@ function fromDatabasePlayer(record) {
     accuracy: record.accuracy || 0,
     isOnline: record.is_online !== false,
     updatedAt: record.updated_at,
+    captureCode: record.capture_code || "",
+    rescueCode: record.rescue_code || "",
+    isCaptured: record.is_captured === true,
+    capturedAt: record.captured_at || "",
     self: userId === state.session?.user?.id,
   };
 }
@@ -1065,14 +1085,15 @@ async function syncOwnPlayer(force) {
     const user = state.session.user;
     const ownPlayer = getOwnPlayer();
     const assignedTeam = state.team || ownPlayer?.team || "";
+    const ownIsCaptured = ownPlayer?.isCaptured === true;
     const payload = {
       user_id: user.id,
       email: user.email,
       display_name: state.playerName || getDisplayName(user),
       room_code: state.roomCode,
-      lat: state.position.lat,
-      lng: state.position.lng,
-      accuracy: state.accuracy || null,
+      lat: ownIsCaptured && Number.isFinite(ownPlayer.lat) ? ownPlayer.lat : state.position.lat,
+      lng: ownIsCaptured && Number.isFinite(ownPlayer.lng) ? ownPlayer.lng : state.position.lng,
+      accuracy: ownIsCaptured ? ownPlayer.accuracy || state.accuracy || null : state.accuracy || null,
       is_online: true,
       updated_at: new Date().toISOString(),
     };
@@ -1217,6 +1238,7 @@ function markOfflineWithKeepalive() {
 function render() {
   renderAuthSetup();
   renderHud();
+  renderCodePanel();
   renderPlayers();
   renderMarkers();
   saveState();
@@ -1236,6 +1258,57 @@ function closeBroadcastToast() {
   if (state.room?.broadcast_at) {
     state.lastBroadcastAt = state.room.broadcast_at;
     saveState();
+  }
+}
+
+async function submitGameCode() {
+  if (!state.supabase || !state.session || !state.roomCode) return;
+
+  const ownPlayer = getOwnPlayer();
+  if (!ownPlayer || !["red", "green"].includes(ownPlayer.team)) {
+    elements.codeActionMessage.textContent = "遊戲開始後才能使用代碼。";
+    return;
+  }
+  if (ownPlayer.isCaptured) {
+    elements.codeActionMessage.textContent = "你已被捕獲，請等待隊友救援。";
+    return;
+  }
+
+  const code = elements.gameCodeInput.value.trim().toUpperCase();
+  if (!code) {
+    elements.codeActionMessage.textContent = "請輸入代碼。";
+    return;
+  }
+
+  elements.submitCodeButton.disabled = true;
+  elements.codeActionMessage.textContent = ownPlayer.team === "red" ? "正在判定捕獲..." : "正在送出救援...";
+
+  try {
+    const { data, error } = await withTimeout(
+      state.supabase.rpc("submit_game_code", {
+        p_room_code: state.roomCode,
+        p_code: code,
+        p_lat: state.position?.lat ?? null,
+        p_lng: state.position?.lng ?? null,
+      }),
+      "代碼判定逾時，請再送出一次。",
+      APP_READ_TIMEOUT_MS,
+    );
+
+    if (error) {
+      elements.codeActionMessage.textContent = error.message;
+      return;
+    }
+
+    elements.gameCodeInput.value = "";
+    elements.codeActionMessage.textContent = getCodeResultMessage(data);
+    await loadRoomPlayers();
+    await pollRoomStatus(true);
+    render();
+  } catch (error) {
+    elements.codeActionMessage.textContent = error.message || "代碼判定失敗，請再試一次。";
+  } finally {
+    elements.submitCodeButton.disabled = false;
   }
 }
 
@@ -1260,15 +1333,69 @@ function renderHud() {
   }
 }
 
+function renderCodePanel() {
+  const ownPlayer = getOwnPlayer();
+  const inStartedGame = state.phase === "game" && state.room?.status === "started" && ownPlayer?.team;
+  elements.codePanel.classList.toggle("hidden", !inStartedGame);
+  if (!inStartedGame) {
+    elements.codeActionMessage.textContent = "";
+    return;
+  }
+
+  const isGreen = ownPlayer.team === "green";
+  const isRed = ownPlayer.team === "red";
+  const isCaptured = ownPlayer.isCaptured === true;
+
+  elements.codeScore.textContent = `紅隊捕獲：${state.room?.red_score || 0}`;
+  elements.capturedMessage.classList.toggle("hidden", !isCaptured);
+  elements.codeDisplay.classList.toggle("hidden", !isGreen);
+  elements.codeInputArea.classList.toggle("hidden", !(isGreen || isRed) || isCaptured);
+  elements.submitCodeButton.disabled = isCaptured;
+
+  if (isGreen) {
+    if (isCaptured) {
+      elements.codeDisplay.textContent = ownPlayer.rescueCode
+        ? `救援代碼：${ownPlayer.rescueCode}`
+        : "等待救援代碼產生...";
+    } else {
+      elements.codeDisplay.textContent = ownPlayer.captureCode
+        ? `綠隊捕獲代碼：${ownPlayer.captureCode}`
+        : "等待捕獲代碼產生...";
+    }
+    elements.gameCodeInput.placeholder = "輸入隊友救援代碼";
+    elements.submitCodeButton.textContent = "救援";
+  } else if (isRed) {
+    elements.codeDisplay.classList.add("hidden");
+    elements.gameCodeInput.placeholder = "輸入綠隊捕獲代碼";
+    elements.submitCodeButton.textContent = "捕獲";
+  }
+}
+
+function getCodeResultMessage(data) {
+  const messages = {
+    empty: "請輸入代碼。",
+    not_joined: "你不在這個遊戲房間中。",
+    not_started: "遊戲尚未開始。",
+    capture_failed: "捕獲失敗，找不到符合的綠隊捕獲代碼。",
+    capture_success: "捕獲成功。",
+    rescuer_captured: "你已被捕獲，不能救援隊友。",
+    rescue_failed: "救援失敗，找不到符合的救援代碼。",
+    rescue_waiting: "已送出救援碼，3 秒內需要另一位綠隊隊友在同地點輸入同一組救援碼。",
+    rescue_success: "救援成功。",
+    invalid_team: "隊伍狀態錯誤。",
+  };
+  return messages[data?.type] || data?.message || "代碼已送出。";
+}
+
 function renderPlayers() {
   const players = getVisiblePlayers();
   const hiddenCount = getSameRoomPlayers().length - players.length;
   const rows = players.map((player) => {
-    const distance = state.position ? `${Math.round(distanceInMeters(state.position, player))}m` : "--";
+    const distance = state.position && hasValidCoordinates(player) ? `${Math.round(distanceInMeters(state.position, player))}m` : "--";
     const teamLabel = player.team === "red" ? "紅隊" : player.team === "green" ? "綠隊" : "未分隊";
-    const onlineLabel = player.isOnline ? "在線" : "離線";
+    const onlineLabel = player.isCaptured ? "已捕獲" : player.isOnline ? "在線" : "離線";
     return `
-      <div class="player-row ${player.isOnline ? "" : "offline"}">
+      <div class="player-row ${player.isCaptured ? "captured" : player.isOnline ? "" : "offline"}">
         <span class="player-dot ${player.team === "red" ? "red-dot" : player.team === "green" ? "green-dot" : "hidden-dot"}"></span>
         <span>
           <strong>${escapeHtml(player.name)}${player.self ? "（你）" : ""}</strong>
@@ -1279,13 +1406,13 @@ function renderPlayers() {
   });
 
   if (hiddenCount > 0) {
-    const hiddenTeamLabel = state.team === "red" ? "紅隊隊友" : state.team === "green" ? "綠隊隊友" : "隊友";
+    const hiddenTeamLabel = state.team === "red" ? "紅隊隊友" : state.team === "green" ? "綠隊隊友" : "玩家";
     rows.push(`
       <div class="player-row hidden-row">
         <span class="player-dot hidden-dot"></span>
         <span>
-          <strong>已隱藏 ${hiddenCount} 名${hiddenTeamLabel}</strong>
-          <small>目前規則只顯示敵隊位置，不顯示隊友位置</small>
+          <strong>已隱藏 ${hiddenCount} 位${hiddenTeamLabel}</strong>
+          <small>遊戲中只顯示對方隊伍與自己。</small>
         </span>
       </div>
     `);
@@ -1296,8 +1423,8 @@ function renderPlayers() {
       <div class="player-row hidden-row">
         <span class="player-dot hidden-dot"></span>
         <span>
-          <strong>等待玩家進入</strong>
-          <small>同房間登入後會出現在這裡</small>
+          <strong>目前沒有可見玩家</strong>
+          <small>遊戲開始後會顯示對方隊伍位置。</small>
         </span>
       </div>
     `);
@@ -1319,7 +1446,7 @@ function renderMarkers() {
 
   players.forEach((player) => {
     const icon = L.divIcon({
-      html: `<span class="custom-marker marker-${player.team || "waiting"}${player.self ? " marker-self" : ""}">${player.self ? "我" : player.team === "red" ? "紅" : player.team === "green" ? "綠" : "等"}</span>`,
+      html: `<span class="custom-marker marker-${player.team || "waiting"}${player.self ? " marker-self" : ""}${player.isCaptured ? " marker-captured" : ""}">${getMarkerLabel(player)}</span>`,
       className: "",
       iconSize: [32, 32],
       iconAnchor: [16, 16],
@@ -1336,6 +1463,14 @@ function renderMarkers() {
 
 function hasValidCoordinates(player) {
   return Number.isFinite(player.lat) && Number.isFinite(player.lng);
+}
+
+function getMarkerLabel(player) {
+  if (player.isCaptured) return "捕";
+  if (player.self) return "你";
+  if (player.team === "red") return "紅";
+  if (player.team === "green") return "綠";
+  return "等";
 }
 
 function getVisiblePlayers() {

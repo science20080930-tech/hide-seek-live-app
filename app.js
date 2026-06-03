@@ -60,6 +60,7 @@ const state = {
   locationSamples: [],
   players: [],
   lastBroadcastAt: "",
+  vibrationPrimed: false,
 };
 
 const views = {
@@ -180,6 +181,9 @@ function saveState() {
 }
 
 function bindEvents() {
+  window.addEventListener("pointerdown", primeVibration, { passive: true });
+  window.addEventListener("touchstart", primeVibration, { passive: true });
+  window.addEventListener("keydown", primeVibration);
   elements.grantLocationButton.addEventListener("click", startPreciseLocation);
   elements.mockLocationButton?.addEventListener("click", useMockLocation);
   elements.saveSupabaseButton.addEventListener("click", saveSupabaseConfig);
@@ -219,6 +223,11 @@ function bindEvents() {
   });
 
   window.addEventListener("beforeunload", markOfflineWithKeepalive);
+  window.addEventListener("pagehide", (event) => {
+    if (!event.persisted) {
+      markOfflineWithKeepalive();
+    }
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       startPreciseLocation();
@@ -1272,7 +1281,7 @@ async function markLocationDisconnected() {
     lat: null,
     lng: null,
     accuracy: null,
-    is_online: false,
+    is_online: true,
     updated_at: new Date().toISOString(),
   };
 
@@ -1343,12 +1352,23 @@ function showBroadcastIfNeeded(room) {
   saveState();
 }
 
+function primeVibration() {
+  if (state.vibrationPrimed) return;
+  state.vibrationPrimed = true;
+  triggerVibration(25);
+}
+
 function vibrateForBroadcast() {
-  if (!navigator.vibrate) return;
+  triggerVibration([280, 90, 280]);
+}
+
+function triggerVibration(pattern) {
+  if (!window.navigator?.vibrate) return false;
   try {
-    navigator.vibrate([160, 80, 160]);
+    return window.navigator.vibrate(pattern);
   } catch {
     // Vibration support depends on the device, browser, and user settings.
+    return false;
   }
 }
 

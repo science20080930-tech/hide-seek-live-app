@@ -4,18 +4,19 @@ import { SUPABASE_CONFIG } from "./supabase-config.js";
 const DEFAULT_CENTER = { lat: 25.0478, lng: 121.5319 };
 const STORAGE_KEY = "hide-seek-live-state-v3";
 const CONFIG_KEY = "hide-seek-supabase-config";
-const LOCATION_SYNC_MS = 1_200;
-const LOCATION_REFRESH_MS = 3_000;
-const ROOM_STATUS_POLL_MS = 1_500;
+const LOCATION_SYNC_MS = 600;
+const LOCATION_REFRESH_MS = 1_200;
+const ROOM_STATUS_POLL_MS = 1_000;
 const APP_READ_TIMEOUT_MS = 45_000;
 const ACTIVE_PLAYER_MS = 90_000;
-const PRESENCE_REFRESH_MS = 5_000;
-const LOCATION_NOISE_FLOOR_METERS = 8;
-const LOCATION_JUMP_SPEED_MPS = 12;
+const PRESENCE_REFRESH_MS = 2_000;
+const PERMISSION_CHECK_MS = 2_000;
+const LOCATION_NOISE_FLOOR_METERS = 3;
+const LOCATION_JUMP_SPEED_MPS = 25;
 const LOCATION_POOR_ACCURACY_METERS = 60;
 const PRECISION_WARMUP_MS = 0;
-const PRECISION_SAMPLE_WINDOW_MS = 12000;
-const TARGET_ACCURACY_METERS = 20;
+const PRECISION_SAMPLE_WINDOW_MS = 6000;
+const TARGET_ACCURACY_METERS = 15;
 const ROOM_SELECT = "*";
 const PLAYER_SELECT =
   "user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at,capture_code,rescue_code,is_captured,captured_at";
@@ -447,7 +448,7 @@ function startLocationPermissionMonitor() {
   if (state.permissionMonitorId !== null) return;
   state.permissionMonitorId = window.setInterval(() => {
     checkLocationPermissionStillGranted();
-  }, LOCATION_SYNC_MS);
+  }, PERMISSION_CHECK_MS);
 }
 
 async function bindLocationPermissionWatcher() {

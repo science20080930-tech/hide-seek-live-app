@@ -8,7 +8,11 @@ const LOCATION_SYNC_MS = 1_200;
 const LOCATION_REFRESH_MS = 3_000;
 const ROOM_STATUS_POLL_MS = 1_500;
 const APP_READ_TIMEOUT_MS = 45_000;
-const ACTIVE_PLAYER_MS = 15_000;
+const ACTIVE_PLAYER_MS = 90_000;
+const PRESENCE_REFRESH_MS = 5_000;
+const LOCATION_NOISE_FLOOR_METERS = 8;
+const LOCATION_JUMP_SPEED_MPS = 12;
+const LOCATION_POOR_ACCURACY_METERS = 60;
 const PRECISION_WARMUP_MS = 0;
 const PRECISION_SAMPLE_WINDOW_MS = 12000;
 const TARGET_ACCURACY_METERS = 20;
@@ -43,6 +47,8 @@ const state = {
   lastSyncAt: 0,
   lastRoomPollAt: 0,
   lastLocationFixAt: 0,
+  lastAcceptedFixAt: 0,
+  lastPresenceTrackAt: 0,
   locationRefreshInProgress: false,
   permissionCheckInProgress: false,
   locationPermissionStatusBound: false,
@@ -213,10 +219,10 @@ function bindEvents() {
   });
 
   window.addEventListener("beforeunload", markOfflineWithKeepalive);
-  window.addEventListener("pagehide", markOfflineWithKeepalive);
-  window.addEventListener("unload", markOfflineWithKeepalive);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
+      startPreciseLocation();
+      refreshRoomPresence(true);
       syncOwnPlayer(true);
     }
   });
@@ -274,7 +280,6 @@ function startPreciseLocation() {
         3: "定位逾時，請再按一次允許定位。",
       };
       setLocationMessage(messages[error.code] || "定位失敗，請重試。");
-      markLocationDisconnected();
     },
     {
       enableHighAccuracy: true,
@@ -326,17 +331,73 @@ function getBestRecentFix() {
 }
 
 function acceptLocationFix(fix) {
+  const stableFix = getStableLocationFix(fix);
   state.position = {
-    lat: fix.lat,
-    lng: fix.lng,
+    lat: stableFix.lat,
+    lng: stableFix.lng,
   };
-  state.accuracy = fix.accuracy;
+  state.accuracy = stableFix.accuracy;
+  state.lastAcceptedFixAt = stableFix.capturedAt;
   saveState();
   setLocationMessage(`高精度定位中，最佳精度約 ±${state.accuracy}m。`);
   showNextAfterLocation();
   startLocationHeartbeat();
   syncOwnPlayer(false);
   render();
+}
+
+function getStableLocationFix(fix) {
+  if (!state.position) return fix;
+
+  const previous = {
+    lat: state.position.lat,
+    lng: state.position.lng,
+    accuracy: state.accuracy || fix.accuracy,
+    capturedAt: state.lastAcceptedFixAt || state.lastLocationFixAt || fix.capturedAt,
+  };
+  const distance = getDistanceMeters(previous, fix);
+  const elapsedSeconds = Math.max(1, (fix.capturedAt - previous.capturedAt) / 1000);
+  const speed = distance / elapsedSeconds;
+  const noiseRadius = Math.max(
+    LOCATION_NOISE_FLOOR_METERS,
+    Math.min(previous.accuracy || LOCATION_POOR_ACCURACY_METERS, fix.accuracy || LOCATION_POOR_ACCURACY_METERS) * 0.7,
+  );
+
+  if (distance <= noiseRadius) {
+    return {
+      lat: previous.lat,
+      lng: previous.lng,
+      accuracy: Math.min(previous.accuracy || fix.accuracy, fix.accuracy || previous.accuracy),
+      capturedAt: fix.capturedAt,
+    };
+  }
+
+  if (speed > LOCATION_JUMP_SPEED_MPS && fix.accuracy > LOCATION_POOR_ACCURACY_METERS) {
+    return {
+      lat: previous.lat,
+      lng: previous.lng,
+      accuracy: previous.accuracy,
+      capturedAt: fix.capturedAt,
+    };
+  }
+
+  return fix;
+}
+
+function getDistanceMeters(a, b) {
+  const earthRadius = 6371000;
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+  const deltaLat = toRadians(b.lat - a.lat);
+  const deltaLng = toRadians(b.lng - a.lng);
+  const h =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+  return 2 * earthRadius * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function toRadians(value) {
+  return (value * Math.PI) / 180;
 }
 
 function useMockLocation() {
@@ -363,6 +424,7 @@ function startLocationHeartbeat() {
       const permissionOk = await checkLocationPermissionStillGranted();
       if (!permissionOk) return;
       requestFreshLocationIfNeeded();
+      refreshRoomPresence(false);
       syncOwnPlayer(false);
       pollRoomStatus(false);
     }
@@ -798,9 +860,15 @@ async function joinRealtimeRoom() {
       state.realtimeRoomCode = "";
     }
 
-    const topic = `hide-seek-${state.roomCode}-${state.session.user.id}`;
+    const topic = `hide-seek-room-${state.roomCode}`;
     state.realtimeChannel = state.supabase
-      .channel(topic)
+      .channel(topic, {
+        config: {
+          presence: {
+            key: state.session.user.id,
+          },
+        },
+      })
       .on(
         "postgres_changes",
         {
@@ -832,6 +900,7 @@ async function joinRealtimeRoom() {
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
           state.realtimeRoomCode = state.roomCode;
+          trackRoomPresence().catch(() => {});
           setHudStatus("即時同步中");
         } else if (status === "CHANNEL_ERROR") {
           setHudStatus("使用輪詢同步中");
@@ -862,7 +931,7 @@ async function loadRoomPlayers() {
       APP_READ_TIMEOUT_MS,
     );
   } catch (error) {
-    setHudStatus(state.players.length ? "連線暫時不穩，沿用上一筆玩家位置。" : error.message);
+    if (!state.players.length) setHudStatus(error.message);
     return;
   }
 
@@ -875,6 +944,25 @@ async function loadRoomPlayers() {
 
   state.players = (data || []).map(fromDatabasePlayer);
   handleAssignedTeam();
+}
+
+async function trackRoomPresence() {
+  if (!state.realtimeChannel || !state.session) return;
+  await state.realtimeChannel.track({
+    role: "player",
+    user_id: state.session.user.id,
+    room_code: state.roomCode,
+    display_name: state.playerName || getDisplayName(state.session.user),
+    has_location: Number.isFinite(state.position?.lat) && Number.isFinite(state.position?.lng),
+    online_at: new Date().toISOString(),
+  });
+  state.lastPresenceTrackAt = Date.now();
+}
+
+function refreshRoomPresence(force) {
+  if (!state.realtimeChannel || !state.session || !state.roomCode) return;
+  if (!force && Date.now() - state.lastPresenceTrackAt < PRESENCE_REFRESH_MS) return;
+  trackRoomPresence().catch(() => {});
 }
 
 function applyRoomPayload(payload) {
@@ -1206,7 +1294,8 @@ async function markLocationDisconnected() {
       ...payload,
     },
   });
-  setHudStatus("定位已關閉，主控台會顯示你已斷開連線。");
+  refreshRoomPresence(true);
+  setHudStatus("定位已關閉，主控台會顯示你的定位關閉。");
   render();
 }
 
@@ -1250,7 +1339,17 @@ function showBroadcastIfNeeded(room) {
   state.lastBroadcastAt = room.broadcast_at;
   elements.broadcastText.textContent = room.broadcast_message;
   elements.broadcastToast.classList.remove("hidden");
+  vibrateForBroadcast();
   saveState();
+}
+
+function vibrateForBroadcast() {
+  if (!navigator.vibrate) return;
+  try {
+    navigator.vibrate([160, 80, 160]);
+  } catch {
+    // Vibration support depends on the device, browser, and user settings.
+  }
 }
 
 function closeBroadcastToast() {

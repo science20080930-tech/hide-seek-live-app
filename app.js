@@ -61,6 +61,9 @@ const state = {
   players: [],
   lastBroadcastAt: "",
   vibrationPrimed: false,
+  audioContext: null,
+  audioPrimed: false,
+  audioPriming: false,
 };
 
 const views = {
@@ -181,9 +184,9 @@ function saveState() {
 }
 
 function bindEvents() {
-  window.addEventListener("pointerdown", primeVibration, { passive: true });
-  window.addEventListener("touchstart", primeVibration, { passive: true });
-  window.addEventListener("keydown", primeVibration);
+  window.addEventListener("pointerdown", primeNotificationAlerts, { passive: true });
+  window.addEventListener("touchstart", primeNotificationAlerts, { passive: true });
+  window.addEventListener("keydown", primeNotificationAlerts);
   elements.grantLocationButton.addEventListener("click", startPreciseLocation);
   elements.mockLocationButton?.addEventListener("click", useMockLocation);
   elements.saveSupabaseButton.addEventListener("click", saveSupabaseConfig);
@@ -601,6 +604,7 @@ async function connectSupabase(url, anonKey) {
 }
 
 async function signInWithGoogle() {
+  primeNotificationAlerts();
   if (!state.supabase) {
     setAuthMessage("請先設定 Supabase。");
     setSupabaseSetupVisible(true);
@@ -620,6 +624,7 @@ async function signInWithGoogle() {
 }
 
 async function signUpWithEmail() {
+  primeNotificationAlerts();
   if (!state.supabase) {
     setAuthMessage("請先設定 Supabase。");
     setSupabaseSetupVisible(true);
@@ -650,6 +655,7 @@ async function signUpWithEmail() {
 }
 
 async function signInWithEmail() {
+  primeNotificationAlerts();
   if (!state.supabase) {
     setAuthMessage("請先設定 Supabase。");
     setSupabaseSetupVisible(true);
@@ -718,6 +724,7 @@ async function upsertProfile() {
 }
 
 async function joinRoom() {
+  primeNotificationAlerts();
   if (state.joinInProgress) return;
   if (!state.session) {
     setLobbyMessage("請先登入。");
@@ -1348,8 +1355,13 @@ function showBroadcastIfNeeded(room) {
   state.lastBroadcastAt = room.broadcast_at;
   elements.broadcastText.textContent = room.broadcast_message;
   elements.broadcastToast.classList.remove("hidden");
-  vibrateForBroadcast();
+  notifyForBroadcast();
   saveState();
+}
+
+function primeNotificationAlerts() {
+  primeVibration();
+  unlockNotificationAudio();
 }
 
 function primeVibration() {
@@ -1358,8 +1370,9 @@ function primeVibration() {
   triggerVibration(25);
 }
 
-function vibrateForBroadcast() {
+function notifyForBroadcast() {
   triggerVibration([280, 90, 280]);
+  playNotificationSound();
 }
 
 function triggerVibration(pattern) {
@@ -1370,6 +1383,63 @@ function triggerVibration(pattern) {
     // Vibration support depends on the device, browser, and user settings.
     return false;
   }
+}
+
+async function unlockNotificationAudio() {
+  if (state.audioPrimed || state.audioPriming) return state.audioPrimed;
+
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return false;
+
+  state.audioPriming = true;
+  try {
+    const audioContext = state.audioContext || new AudioContextClass();
+    state.audioContext = audioContext;
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+    if (audioContext.state === "suspended") return false;
+    playTone(audioContext, 0.001, 0.03);
+    state.audioPrimed = true;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    state.audioPriming = false;
+  }
+}
+
+async function playNotificationSound() {
+  const ready = await unlockNotificationAudio();
+  const audioContext = state.audioContext;
+  if (!ready || !audioContext) return false;
+
+  try {
+    playTone(audioContext, 0.18, 0.16, 880);
+    window.setTimeout(() => {
+      playTone(audioContext, 0.14, 0.18, 1175);
+    }, 120);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function playTone(audioContext, volume, durationSeconds, frequency = 1046) {
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  const now = audioContext.currentTime;
+
+  oscillator.type = "sine";
+  oscillator.frequency.setValueAtTime(frequency, now);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(Math.max(volume, 0.0001), now + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + durationSeconds);
+
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+  oscillator.start(now);
+  oscillator.stop(now + durationSeconds + 0.04);
 }
 
 function closeBroadcastToast() {

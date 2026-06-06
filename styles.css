@@ -309,6 +309,22 @@ input {
   font-weight: 900;
 }
 
+.skill-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #c4d9ee;
+  border-radius: 8px;
+  background: #eef6ff;
+}
+
+.skill-panel p {
+  margin: 0;
+  color: var(--blue);
+  font-weight: 900;
+  line-height: 1.45;
+}
+
 .captured-message {
   margin: 0;
   padding: 10px;
@@ -448,6 +464,11 @@ input {
 
 .broadcast-toast p {
   margin-bottom: 0;
+}
+
+.skill-toast {
+  top: 104px;
+  border-color: #c4d9ee;
 }
 
 .toast-close {

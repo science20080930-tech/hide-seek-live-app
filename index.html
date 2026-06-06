@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://unpkg.com" />
     <link rel="preconnect" href="https://esm.sh" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="./styles.css?v=20260603-fast-location" />
+    <link rel="stylesheet" href="./styles.css?v=20260606-skill-cards" />
   </head>
   <body>
     <main class="stage">
@@ -113,6 +113,10 @@
           <div id="codePanel" class="code-panel hidden">
             <div id="codeScore" class="code-score">紅隊捕獲：0</div>
             <div id="codeDisplay" class="code-display hidden"></div>
+            <div id="skillPanel" class="skill-panel hidden">
+              <p id="skillStatus">尚未持有技能卡</p>
+              <button id="useSkillButton" class="secondary-action wide" type="button">使用技能卡</button>
+            </div>
             <p id="capturedMessage" class="captured-message hidden">你已被捕獲，請等待救援。</p>
             <div id="codeInputArea" class="code-input-area hidden">
               <input id="gameCodeInput" type="text" maxlength="12" placeholder="輸入代碼" autocomplete="off" />
@@ -135,7 +139,13 @@
       <p id="broadcastText"></p>
     </div>
 
+    <div id="skillToast" class="broadcast-toast skill-toast hidden" role="status" aria-live="assertive">
+      <button id="closeSkillToastButton" class="toast-close" type="button" aria-label="關閉技能通知">×</button>
+      <p class="eyebrow">技能卡</p>
+      <p id="skillToastText"></p>
+    </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="./app.js?v=20260603-fast-location" type="module"></script>
+    <script src="./app.js?v=20260606-skill-cards" type="module"></script>
   </body>
 </html>

@@ -18,8 +18,7 @@ const PRECISION_WARMUP_MS = 0;
 const PRECISION_SAMPLE_WINDOW_MS = 6000;
 const TARGET_ACCURACY_METERS = 15;
 const ROOM_SELECT = "*";
-const PLAYER_SELECT =
-  "user_id,email,display_name,team,room_code,lat,lng,accuracy,is_online,updated_at,capture_code,rescue_code,is_captured,captured_at";
+const PLAYER_SELECT = "*";
 
 const state = {
   phase: "location",
@@ -61,6 +60,7 @@ const state = {
   locationSamples: [],
   players: [],
   lastBroadcastAt: "",
+  lastSkillEventAt: "",
   vibrationPrimed: false,
   audioContext: null,
   audioPrimed: false,
@@ -106,6 +106,9 @@ const elements = {
   codePanel: document.querySelector("#codePanel"),
   codeScore: document.querySelector("#codeScore"),
   codeDisplay: document.querySelector("#codeDisplay"),
+  skillPanel: document.querySelector("#skillPanel"),
+  skillStatus: document.querySelector("#skillStatus"),
+  useSkillButton: document.querySelector("#useSkillButton"),
   capturedMessage: document.querySelector("#capturedMessage"),
   codeInputArea: document.querySelector("#codeInputArea"),
   gameCodeInput: document.querySelector("#gameCodeInput"),
@@ -114,6 +117,9 @@ const elements = {
   broadcastToast: document.querySelector("#broadcastToast"),
   broadcastText: document.querySelector("#broadcastText"),
   closeBroadcastButton: document.querySelector("#closeBroadcastButton"),
+  skillToast: document.querySelector("#skillToast"),
+  skillToastText: document.querySelector("#skillToastText"),
+  closeSkillToastButton: document.querySelector("#closeSkillToastButton"),
   leafletMap: document.querySelector("#leafletMap"),
 };
 
@@ -142,6 +148,7 @@ function restoreState() {
     state.locationGranted = Boolean(saved.locationGranted);
     state.usingMockLocation = Boolean(saved.usingMockLocation);
     state.lastBroadcastAt = saved.lastBroadcastAt || "";
+    state.lastSkillEventAt = saved.lastSkillEventAt || "";
   } catch {
     state.team = "";
   }
@@ -180,6 +187,7 @@ function saveState() {
       locationGranted: state.locationGranted,
       usingMockLocation: state.usingMockLocation,
       lastBroadcastAt: state.lastBroadcastAt,
+      lastSkillEventAt: state.lastSkillEventAt,
     }),
   );
 }
@@ -202,6 +210,8 @@ function bindEvents() {
   });
   elements.recenterButton.addEventListener("click", recenterMap);
   elements.closeBroadcastButton.addEventListener("click", closeBroadcastToast);
+  elements.closeSkillToastButton.addEventListener("click", closeSkillToast);
+  elements.useSkillButton.addEventListener("click", useSkillCard);
   elements.submitCodeButton.addEventListener("click", submitGameCode);
   elements.gameCodeInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -990,6 +1000,7 @@ function applyRoomPayload(payload) {
   if (payload.new?.room_code) {
     state.room = payload.new;
     showBroadcastIfNeeded(payload.new);
+    showSkillEventIfNeeded(payload.new);
   }
 }
 
@@ -1036,6 +1047,7 @@ async function pollRoomStatus(force) {
 
     state.room = data;
     showBroadcastIfNeeded(data);
+    showSkillEventIfNeeded(data);
     if (data.status === "ended" || (data.status === "started" && state.phase === "waiting")) {
       await handleRoomStateChange();
       render();
@@ -1158,6 +1170,9 @@ function fromDatabasePlayer(record) {
     rescueCode: record.rescue_code || "",
     isCaptured: record.is_captured === true,
     capturedAt: record.captured_at || "",
+    skillCard: record.skill_card || "",
+    skillAwardedAt: record.skill_card_awarded_at || "",
+    skillImmuneUntil: record.skill_immune_until || "",
     self: userId === state.session?.user?.id,
   };
 }
@@ -1168,6 +1183,7 @@ function canSyncOwnPlayer() {
   if (state.room.status !== "lobby" && state.room.status !== "started") return;
   if (!state.joinInProgress && !["waiting", "game"].includes(state.phase)) return;
   if (document.visibilityState === "hidden") return;
+  if (isOwnPlayerPaused()) return;
   return true;
 }
 
@@ -1360,6 +1376,16 @@ function showBroadcastIfNeeded(room) {
   saveState();
 }
 
+function showSkillEventIfNeeded(room) {
+  if (!room?.skill_event_message || !room.skill_event_at) return;
+  if (room.skill_event_at === state.lastSkillEventAt) return;
+  state.lastSkillEventAt = room.skill_event_at;
+  elements.skillToastText.textContent = room.skill_event_message;
+  elements.skillToast.classList.remove("hidden");
+  notifyForBroadcast();
+  saveState();
+}
+
 function primeNotificationAlerts() {
   primeVibration();
   unlockNotificationAudio();
@@ -1451,6 +1477,54 @@ function closeBroadcastToast() {
   }
 }
 
+function closeSkillToast() {
+  elements.skillToast.classList.add("hidden");
+  if (state.room?.skill_event_at) {
+    state.lastSkillEventAt = state.room.skill_event_at;
+    saveState();
+  }
+}
+
+async function useSkillCard() {
+  if (!state.supabase || !state.session || !state.roomCode) return;
+  const ownPlayer = getOwnPlayer();
+  if (!ownPlayer?.skillCard) {
+    elements.codeActionMessage.textContent = "目前沒有可使用的技能卡。";
+    return;
+  }
+  if (isOwnPlayerPaused()) {
+    elements.codeActionMessage.textContent = "你目前被技能暫停，暫時不能使用技能卡。";
+    return;
+  }
+
+  elements.useSkillButton.disabled = true;
+  elements.codeActionMessage.textContent = "正在使用技能卡...";
+
+  try {
+    const { data, error } = await withTimeout(
+      state.supabase.rpc("use_skill_card", {
+        p_room_code: state.roomCode,
+      }),
+      "技能卡使用逾時，請再試一次。",
+      APP_READ_TIMEOUT_MS,
+    );
+
+    if (error) {
+      elements.codeActionMessage.textContent = error.message;
+      return;
+    }
+
+    elements.codeActionMessage.textContent = getSkillResultMessage(data);
+    await loadRoomPlayers();
+    await pollRoomStatus(true);
+    render();
+  } catch (error) {
+    elements.codeActionMessage.textContent = error.message || "技能卡使用失敗，請再試一次。";
+  } finally {
+    elements.useSkillButton.disabled = false;
+  }
+}
+
 async function submitGameCode() {
   if (!state.supabase || !state.session || !state.roomCode) return;
 
@@ -1535,12 +1609,18 @@ function renderCodePanel() {
   const isGreen = ownPlayer.team === "green";
   const isRed = ownPlayer.team === "red";
   const isCaptured = ownPlayer.isCaptured === true;
+  const activePause = getOwnPauseState();
+  const activeImmunity = getActiveUntilSeconds(ownPlayer.skillImmuneUntil);
 
   elements.codeScore.textContent = `紅隊捕獲：${state.room?.red_score || 0}`;
   elements.capturedMessage.classList.toggle("hidden", !isCaptured);
   elements.codeDisplay.classList.toggle("hidden", !isGreen);
   elements.codeInputArea.classList.toggle("hidden", !(isGreen || isRed) || isCaptured);
   elements.submitCodeButton.disabled = isCaptured;
+  elements.skillPanel.classList.toggle("hidden", !ownPlayer.skillCard && !activePause && !activeImmunity);
+  elements.useSkillButton.classList.toggle("hidden", !ownPlayer.skillCard);
+  elements.useSkillButton.disabled = !ownPlayer.skillCard || Boolean(activePause);
+  elements.skillStatus.textContent = getSkillPanelText(ownPlayer, activePause, activeImmunity);
 
   if (isGreen) {
     if (isCaptured) {
@@ -1559,6 +1639,42 @@ function renderCodePanel() {
     elements.gameCodeInput.placeholder = "輸入綠隊捕獲代碼";
     elements.submitCodeButton.textContent = "捕獲";
   }
+}
+
+function getSkillPanelText(ownPlayer, activePause, activeImmunity) {
+  const lines = [];
+  if (ownPlayer.skillCard) {
+    lines.push(`持有技能卡：${getSkillCardLabel(ownPlayer.skillCard)}`);
+  }
+  if (activePause) {
+    lines.push(`${activePause.label}，剩餘 ${activePause.remainingSeconds} 秒`);
+  }
+  if (activeImmunity > 0) {
+    lines.push(`無敵中，剩餘 ${activeImmunity} 秒`);
+  }
+  return lines.join("｜") || "尚未持有技能卡";
+}
+
+function getSkillCardLabel(card) {
+  const labels = {
+    red_pause_all_5: "全體暫停 5 秒，只有你能動",
+    red_pause_green_3: "綠隊全體暫停 3 秒",
+    green_hide_green_3: "隱藏綠隊行蹤 3 秒",
+    green_immune_30: "無敵 30 秒",
+    green_pause_red_3: "紅隊暫停 3 秒",
+  };
+  return labels[card] || "未知技能卡";
+}
+
+function getSkillResultMessage(data) {
+  if (data?.ok) return data.message || "技能卡已使用。";
+  const messages = {
+    no_card: "目前沒有可使用的技能卡。",
+    not_joined: "你不在這個房間。",
+    not_started: "遊戲尚未開始。",
+    invalid_card: "這張技能卡不能由目前身分使用。",
+  };
+  return messages[data?.type] || data?.message || "技能卡使用失敗。";
 }
 
 function getCodeResultMessage(data) {
@@ -1655,6 +1771,49 @@ function hasValidCoordinates(player) {
   return Number.isFinite(player.lat) && Number.isFinite(player.lng);
 }
 
+function isActiveUntil(value) {
+  if (!value) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time > Date.now();
+}
+
+function getActiveUntilSeconds(value) {
+  if (!value) return 0;
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return 0;
+  return Math.max(0, Math.ceil((time - Date.now()) / 1000));
+}
+
+function isImmuneToRedSkill(player) {
+  return player?.team === "green" && isActiveUntil(player.skillImmuneUntil);
+}
+
+function getOwnPauseState() {
+  const ownPlayer = getOwnPlayer();
+  if (!ownPlayer || state.room?.status !== "started") return null;
+  const room = state.room || {};
+  const ownUserId = state.session?.user?.id;
+
+  if (isActiveUntil(room.pause_all_until) && room.pause_all_except_user_id !== ownUserId && !isImmuneToRedSkill(ownPlayer)) {
+    return { label: "全體暫停中", remainingSeconds: getActiveUntilSeconds(room.pause_all_until) };
+  }
+  if (ownPlayer.team === "green" && isActiveUntil(room.pause_green_until) && !isImmuneToRedSkill(ownPlayer)) {
+    return { label: "綠隊暫停中", remainingSeconds: getActiveUntilSeconds(room.pause_green_until) };
+  }
+  if (ownPlayer.team === "red" && isActiveUntil(room.pause_red_until)) {
+    return { label: "紅隊暫停中", remainingSeconds: getActiveUntilSeconds(room.pause_red_until) };
+  }
+  return null;
+}
+
+function isOwnPlayerPaused() {
+  return Boolean(getOwnPauseState());
+}
+
+function shouldHideGreenPlayers() {
+  return state.team === "red" && isActiveUntil(state.room?.hide_green_until);
+}
+
 function getMarkerLabel(player) {
   if (player.isCaptured) return "捕";
   if (player.self) return "你";
@@ -1669,7 +1828,7 @@ function getVisiblePlayers() {
     return players.filter((player) => player.self);
   }
   if (state.team === "red") {
-    return players.filter((player) => player.self || player.team === "green");
+    return players.filter((player) => player.self || (player.team === "green" && !shouldHideGreenPlayers()));
   }
   if (state.team === "green") {
     return players.filter((player) => player.self || player.team === "red");

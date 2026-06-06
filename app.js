@@ -1380,10 +1380,30 @@ function showSkillEventIfNeeded(room) {
   if (!room?.skill_event_message || !room.skill_event_at) return;
   if (room.skill_event_at === state.lastSkillEventAt) return;
   state.lastSkillEventAt = room.skill_event_at;
-  elements.skillToastText.textContent = room.skill_event_message;
+  elements.skillToastText.textContent = getSkillEventMessage(room);
   elements.skillToast.classList.remove("hidden");
   notifyForBroadcast();
   saveState();
+}
+
+function getSkillEventMessage(room) {
+  const actor = extractSkillActor(room.skill_event_message);
+  const messages = {
+    skill_awarded: `${actor} 獲得技能卡。`,
+    red_bomb_pause_red_3: `${actor} 抽到炸彈，紅隊暫停 3 秒。`,
+    red_pause_all_5: `${actor} 使用技能卡：全體暫停 5 秒。`,
+    red_pause_green_3: `${actor} 使用技能卡：綠隊暫停 3 秒。`,
+    green_hide_green_3: `${actor} 使用技能卡：綠隊行蹤隱藏 3 秒。`,
+    green_immune_30: `${actor} 使用技能卡：無敵 30 秒。`,
+    green_pause_red_3: `${actor} 使用技能卡：紅隊暫停 3 秒。`,
+  };
+  return messages[room.skill_event_kind] || room.skill_event_message || "技能卡事件發生。";
+}
+
+function extractSkillActor(message) {
+  if (!message) return "有玩家";
+  const match = String(message).match(/^(.+?)\\s(?:used|gained|rescued|drew)\\b/i);
+  return match?.[1] || "有玩家";
 }
 
 function primeNotificationAlerts() {

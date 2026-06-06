@@ -43,14 +43,14 @@ returns text
 language sql
 immutable
 as $$
-  select case p_card
-    when 'red_pause_all_5' then '全體暫停 5 秒'
-    when 'red_pause_green_3' then '綠隊暫停 3 秒'
-    when 'red_bomb_pause_red_3' then '炸彈：紅隊暫停 3 秒'
-    when 'green_hide_green_3' then '隱藏綠隊行蹤 3 秒'
-    when 'green_immune_30' then '無敵 30 秒'
-    when 'green_pause_red_3' then '紅隊暫停 3 秒'
-    else '未知技能卡'
+  select case
+    when p_card = 'red_pause_all_5' then 'Pause everyone for 5 seconds'
+    when p_card = 'red_pause_green_3' then 'Pause green team for 3 seconds'
+    when p_card = 'red_bomb_pause_red_3' then 'Bomb: pause red team for 3 seconds'
+    when p_card = 'green_hide_green_3' then 'Hide green team for 3 seconds'
+    when p_card = 'green_immune_30' then 'Immune for 30 seconds'
+    when p_card = 'green_pause_red_3' then 'Pause red team for 3 seconds'
+    else 'Unknown skill card'
   end;
 $$;
 
@@ -165,7 +165,7 @@ begin
     if new_red_score % 5 = 0 then
       awarded_card := public.random_skill_card('red');
       if awarded_card = 'red_bomb_pause_red_3' then
-        event_message := coalesce(actor.display_name, '紅隊玩家') || ' 抽到炸彈，紅隊暫停 3 秒！';
+        event_message := coalesce(actor.display_name, 'Red player') || ' drew a bomb. Red team pauses for 3 seconds.';
         update public.game_rooms
           set red_score = new_red_score,
               pause_red_until = now() + make_interval(secs => 3),
@@ -182,7 +182,7 @@ begin
               updated_at = now()
         where user_id = actor.user_id;
 
-        event_message := coalesce(actor.display_name, '紅隊玩家') || ' 獲得技能卡：' || public.skill_card_label(awarded_card);
+        event_message := coalesce(actor.display_name, 'Red player') || ' gained a skill card: ' || public.skill_card_label(awarded_card);
         update public.game_rooms
           set red_score = new_red_score,
               skill_event_kind = 'skill_awarded',
@@ -271,7 +271,7 @@ begin
             updated_at = now()
       where user_id = other_attempt.rescuer_id;
 
-      event_message := coalesce(first_rescuer.display_name, '綠隊玩家') || ' 救援成功並獲得技能卡：' || public.skill_card_label(awarded_card);
+      event_message := coalesce(first_rescuer.display_name, 'Green player') || ' rescued a teammate and gained a skill card: ' || public.skill_card_label(awarded_card);
       update public.game_rooms
         set skill_event_kind = 'skill_awarded',
             skill_event_message = event_message,
@@ -361,7 +361,7 @@ begin
     return jsonb_build_object('ok', false, 'type', 'invalid_card', 'message', 'Invalid green team skill card.');
   end if;
 
-  event_message := coalesce(actor.display_name, '玩家') || ' 使用技能卡：' || public.skill_card_label(card);
+  event_message := coalesce(actor.display_name, 'Player') || ' used a skill card: ' || public.skill_card_label(card);
 
   update public.game_players
     set skill_card = null,
